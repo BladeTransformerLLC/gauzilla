@@ -428,10 +428,10 @@ pub async fn main() {
                                 ui.end_row();
 
                                 ui.add(egui::Label::new("GitHub"));
-                                //use egui::special_emojis::GITHUB;
+                                use egui::special_emojis::GITHUB;
                                 ui.hyperlink_to(
-                                    format!("satyoshi.com"),
-                                    "https://www.satyoshi.com/",
+                                    format!("{GITHUB} BladeTransformerLLC/gauzilla"),
+                                    "https://github.com/BladeTransformerLLC/gauzilla",
                                 );
                                 ui.end_row();
                             });
