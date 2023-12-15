@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta content="text/html;charset=utf-8" http-equiv="Content-Type" />
+        <title>Renderer</title>
+        <style>
+            html,
+            body {
+                /* Allow canvas to fill entire web page: */
+                overflow: hidden;
+                margin: 0 !important;
+                padding: 0 !important;
+                height: 100%;
+                width: 100%;
+            }
+            #render_canvas {
+                /* Make the canvas fill the entire viewport: */
+                display: block;
+                width: 100vw;
+                height: 100vh;
+            }
+        </style>
+    </head>
+    <body>
+        <script type="module">
+            import init, { run } from "./pkg/gauzilla.js";
+            init().then(() => {
+                run();
+            });
+        </script>
+        <canvas id="render_canvas"></canvas>
+    </body>
+</html>
