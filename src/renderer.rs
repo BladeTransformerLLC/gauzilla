@@ -265,8 +265,12 @@ pub async fn main() {
     let mut cam_roll = 0_f32;
     let mut prev_cam_roll = 0_f32;
     let mut flip_y = true;
+
     let mut frame_prev = get_time_milliseconds();
+    let mut fps_ma = IncrementalMA::new(100);
+
     let mut sort_time = 0_f64;
+    let mut sort_time_ma = IncrementalMA::new(100);
 
     window.render_loop(move |mut frame_input| {
         let error_flag = Arc::clone(&error_flag);
@@ -275,10 +279,11 @@ pub async fn main() {
         let now =  get_time_milliseconds();
         let fps =  1000.0 / (now - frame_prev);
         frame_prev = now;
+        let fps = fps_ma.add(fps);
 
         // receive sort_time from the second thread
         match rx3.try_recv() {
-            Ok(f) => sort_time = f,
+            Ok(f) => sort_time = sort_time_ma.add(f),
             Err(e) => {},
         }
 

@@ -2,6 +2,7 @@ use wasm_bindgen::prelude::*;
 use std::{
     future::Future,
     sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}},
+    collections::VecDeque,
 };
 //use parking_lot::{Mutex, RawMutex};
 use half::f16;
@@ -92,6 +93,40 @@ pub fn is_float_zero(x: f32, threshold: f32) -> bool {
 #[inline(always)]
 pub fn are_floats_equal(x: f32, y: f32, threshold: f32) -> bool {
     return is_float_zero(x-y, threshold);
+}
+
+
+/// Incremental Moving Average
+pub struct IncrementalMA {
+    v: VecDeque<f64>,
+    sum: f64,
+}
+impl IncrementalMA {
+    pub fn new(window_size: usize) -> Self {
+        IncrementalMA {
+            v: VecDeque::with_capacity(window_size),
+            sum: 0_f64,
+        }
+    }
+
+    pub fn add(&mut self, value: f64) -> f64 {
+        if self.v.len() == self.v.capacity() {
+            self.sum -= self.v.pop_front().unwrap();
+        }
+
+        self.v.push_back(value);
+        self.sum += value;
+
+        self.sum / (self.v.len() as f64)
+    }
+
+    pub fn calc(&self) -> f64 {
+        if self.v.is_empty() {
+            0_f64
+        } else {
+            self.sum / (self.v.len() as f64)
+        }
+    }
 }
 
 
