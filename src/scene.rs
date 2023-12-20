@@ -1,7 +1,6 @@
 use std::{
     io::{BufRead, Cursor, BufReader, Read, Seek, SeekFrom},
     cmp::Ordering,
-    collections::HashMap,
     sync::{Arc, Mutex},
 };
 use three_d::prelude::*;
@@ -360,43 +359,34 @@ impl Scene {
             })
             .collect();
         let mut size_list = size_list;
-        log!("Scene::sort(): max_depth={:?}, min_depth={:?}", max_depth, min_depth);
+        //log!("Scene::sort(): max_depth={:?}, min_depth={:?}", max_depth, min_depth);
 
         let size16: usize = 256*256; // 65,536
         let depth_inv = size16 as f32 / (max_depth - min_depth) as f32;
 
-        let mut counts0 = HashMap::<i32, u32>::new();
+        let mut counts0 = vec![0_u32; size16];
         // count the occurrences of each depth
         for i in 0..scene.splat_count {
             let depth = ((size_list[i] - min_depth) as f32 * depth_inv).floor() as i32;
+            let depth = depth.clamp(0, size16 as i32 - 1);
             size_list[i] = depth;
-
-            let count = counts0.entry(depth).or_insert(0);
-            *count += 1;
+            counts0[depth as usize] += 1;
         }
         let mut starts0 = vec![0_u32; size16];
         // store the cumulative count of elements
         for i in 1..size16 {
-            let count = counts0.entry((i-1) as i32).or_insert(0);
-            starts0[i] = starts0[i-1] + (*count);
+            starts0[i] = starts0[i-1] + counts0[i-1];
         }
 
         let mut depth_index = vec![0_u32; scene.splat_count];
         for i in 0..scene.splat_count {
-            let mut depth = size_list[i];
-            // FIXME
-            if depth >= size16 as i32 {
-                depth = (size16 as i32)-1;
-            } else if depth < 0_i32 {
-                depth = 0;
-            }
-            let depth = depth as usize;
+            let depth = size_list[i] as usize;
             let j = starts0[depth] as usize;
             depth_index[j] = i as u32;
             starts0[depth] += 1;
         }
         depth_index.reverse();// FIXME
-        let _ = bus.try_broadcast(depth_index); // TODO: avoid clone/copy without using mutex
+        let _ = bus.try_broadcast(depth_index);
 
         {
             let mut mutex = scene.prev_vp.lock().unwrap();
@@ -431,7 +421,7 @@ pub async fn load_scene() -> Scene {
                 cursor = c;
             },
             Err(e) => {
-                log!("main(): ERROR: {}", e);
+                log!("load_scene(): ERROR: {}", e);
                 unreachable!();
             },
         }
