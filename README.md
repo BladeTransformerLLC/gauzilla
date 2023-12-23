@@ -13,21 +13,21 @@ A 3D Gaussian Splatting (3DGS) renderer written in Rust for platform-agnostic We
 ## Introduction
 The innovative rendering technique known as 3D Gaussian Splatting (3DGS) [1] represents a Machine Learning-oriented approach to 3D rendering, specifically designed for Novel View Synthesis (NVS). It facilitates the real-time photorealistic rendering of scenes reconstructed from images and videos captured using conventional smartphone cameras. Since its release in 2023 there has been a Cambrian explosion of 3DGS applications and extensions, such as 4DGS [2], D3GA [3], SLAM [4], SC-GS [5], GPS [6], GHA [7], etc.
 
-One of the orignal ideas of splatting Gaussian ellipses goes back to 2002 [8] and 3DGS uses almost the same approach for its efficient forward rendering on the GPU.
+One of the orignal ideas of splatting Gaussian ellipses can be traced back in 2002 [8] and 3DGS uses almost the same approach for its efficient forward rendering on the GPU.
 
 Briefly, a 3D elliptical Gaussian centered at a point p with a covariance matirx V is defined as:
 
 ![Eq.19 of [8]](images/eq19.png?raw=true "Eq.19 of [8]")
 
-The key is to compute the 3x3 covariance matrix in ray coordinates:
+The key to splatting it onto the 2D screen is to compute the 3x3 covariance matrix in ray coordinates:
 
 ![Eq.31 of [8]](images/eq31.png?raw=true "Eq.31 of [8]")
 
-where W is the view transformation (camera) matrix, V_k = R * S * S^T * R^T (which can be computed from quaternions and scales stored in the PLY file), and
+where W is the view transformation (camera) matrix, V_k = R * S * S^T * R^T (covariance matrix factorized with a rotation matrix R and a scaling matrix S, both of which can be computed, respectively, from quaternions and scalers stored in the PLY file), and
 
 ![Eq.29 of [8]](images/eq29.png?raw=true "Eq.29 of [8]")
 
-is a Jacobian or the partial derivative of the camera-ray mapping at the point t_k in camera space.
+is a Jacobian or the partial derivative of the camera-ray mapping at the point t_k in camera space (i.e., affine approxmation of the perspective projection).
 
 Once the covariance matrix in ray coordinates is obtained via the simple matrix multiplications above, one can compute from the top-left 2x2 component of the matrix the major and minor axes representing the size and orientation of Gaussian ellipses, which can subsequently be rendered on the GPU efficiently using Geometry Instancing.
 
@@ -55,7 +55,7 @@ Right mouse button  - Move left/right/up/down
 ## ToDo
 * Optimize `Scene::sort()` and `Scene::generate_texture()` (eg. parallelize using [wasm-bindgen-rayon](https://github.com/GoogleChromeLabs/wasm-bindgen-rayon))
 * Display a progress bar for PLY file loading
-* Implement progressive PLY file loading from for web hosting
+* Implement progressive PLY file loading for web hosting
 * Allow camera controls with keyboard
 * Write a WebGPU render path (cf. [splatter](https://github.com/Lichtso/splatter))
 

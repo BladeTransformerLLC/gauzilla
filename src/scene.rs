@@ -120,9 +120,9 @@ impl Scene {
 
         // sort the indices of splats based on size_list in descending order
         size_index.sort_by(
-            |&a, &b| size_list[b as usize].partial_cmp(
-                &size_list[a as usize]).unwrap_or(Ordering::Equal
-            )
+            |&a, &b| size_list[b as usize]
+                .partial_cmp(&size_list[a as usize])
+                .unwrap_or(Ordering::Equal)
         );
         log!(
             "Scene::load(): size_list[0]={}, size_list[-1]={}",
