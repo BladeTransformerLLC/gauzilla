@@ -18,6 +18,50 @@ use crate::scene::*;
 enum TdCameraControl { Orbit, Fly }
 
 
+pub struct OrbitControl2 {
+    control: CameraControl,
+}
+impl OrbitControl2 {
+    /// Creates a new orbit control with the given target and minimum and maximum distance to the target.
+    pub fn new(target: Vec3, min_distance: f32, max_distance: f32) -> Self {
+        Self {
+            control: CameraControl {
+                left_drag_horizontal: CameraAction::OrbitLeft { target, speed: 0.1 },
+                left_drag_vertical: CameraAction::OrbitUp { target, speed: 0.1 },
+                scroll_vertical: CameraAction::Zoom {
+                    min: min_distance,
+                    max: max_distance,
+                    speed: 0.001,
+                    target,
+                },
+                // FIXME: the orbit origin does not get translated correctly
+                //right_drag_horizontal: CameraAction::Left { speed: 0.01 },
+                //right_drag_vertical: CameraAction::Up { speed: 0.01 },
+                ..Default::default()
+            },
+        }
+    }
+
+    /// Handles the events. Must be called each frame.
+    pub fn handle_events(&mut self, camera: &mut Camera, events: &mut [Event]) -> bool {
+        if let CameraAction::Zoom { speed, target, .. } = &mut self.control.scroll_vertical {
+            let x = target.distance(*camera.position());
+            *speed = 0.001 * x + 0.001;
+        }
+        if let CameraAction::OrbitLeft { speed, target } = &mut self.control.left_drag_horizontal {
+            let x = target.distance(*camera.position());
+            *speed = 0.01 * x + 0.001;
+        }
+        if let CameraAction::OrbitUp { speed, target } = &mut self.control.left_drag_vertical {
+            let x = target.distance(*camera.position());
+            *speed = 0.01 * x + 0.001;
+        }
+
+        self.control.handle_events(camera, events)
+    }
+}
+
+
 pub async fn main() {
     let error_flag = Arc::new(AtomicBool::new(false));
     let error_msg = Arc::new(Mutex::new(String::new()));
@@ -51,7 +95,7 @@ pub async fn main() {
         0.1,//0.2,
         10.0,//200.0,
     );
-    let mut orbit_control = OrbitControl::new(*camera.target(), 1.0, 100.0);
+    let mut orbit_control = OrbitControl2::new(*camera.target(), 1.0, 100.0);
     let mut fly_control = FlyControl::new(0.005);
     let mut egui_control = TdCameraControl::Orbit;
 
@@ -220,7 +264,7 @@ pub async fn main() {
         }
     }
 
-    //resize(&gl, &gsplat_program, &camera, &mut u_focal, &mut u_viewport, &mut u_projection);
+    // TODO: resize()
 
     // lock-free bus for depth_index
     let mut bus1 = Bus::<Vec<u32>>::new(10);
@@ -272,6 +316,8 @@ pub async fn main() {
     let mut sort_time = 0_f64;
     let mut sort_time_ma = IncrementalMA::new(100);
 
+    let mut send_view_proj: bool = true;
+
     window.render_loop(move |mut frame_input| {
         let error_flag = Arc::clone(&error_flag);
         let error_msg = Arc::clone(&error_msg);
@@ -289,6 +335,34 @@ pub async fn main() {
 
         camera.set_viewport(frame_input.viewport);
 
+        for event in frame_input.events.iter() {
+            send_view_proj = true;
+
+            /*
+            if let Event::MousePress {
+                button,
+                position,
+                modifiers,
+                ..
+            } = event
+            {
+                if *button == MouseButton::Right && !modifiers.ctrl {
+                    log!("right mouse button pressed at {:?}", position);
+                }
+            }
+            */
+
+            /*
+            if let Event::MouseMotion {
+                delta,
+                button,
+                handled,
+                ..
+            } = event {
+            }
+            */
+        }
+
         if !pointer_over_gui {
             match egui_control {
                 TdCameraControl::Orbit => {
@@ -301,6 +375,7 @@ pub async fn main() {
         }
 
         if flip_y {
+            //camera.mirror_in_xz_plane(); // FIXME
             camera.roll(degrees(180.0));
             flip_y = false;
         }
@@ -445,29 +520,14 @@ pub async fn main() {
             },
         );
 
-        for event in frame_input.events.iter() {
-            // send view_proj to thread only when it's changed by user input
+        // send view_proj to thread only when it's changed by user input
+        if send_view_proj {
             let view_proj = projection_matrix * view_matrix;
             //////////////////////////////////
             // non-blocking (i.e., no atomic.wait)
             let _ = bus2.try_broadcast(view_proj);
             //////////////////////////////////
-            /*
-            if let Event::MousePress {
-                button,
-                position,
-                modifiers,
-                ..
-            } = event
-            {
-                if *button == MouseButton::Left && !modifiers.ctrl {
-                    log!("left mouse button pressed");
-                }
-                if *button == MouseButton::Right && !modifiers.ctrl {
-                    log!("right mouse button pressed");
-                }
-            }
-            */
+            send_view_proj = false;
         }
 
         if !error_flag.load(Ordering::Relaxed) {
@@ -479,6 +539,7 @@ pub async fn main() {
                 {
                     gl.disable(context::DEPTH_TEST);
                     gl.disable(context::CULL_FACE);
+                    //gl.cull_face(context::FRONT);
 
                     // FIXME
                     gl.enable(context::BLEND);
@@ -552,6 +613,8 @@ pub async fn main() {
         FrameOutput::default()
     });
 
+    // thread exit is not implemented in rustwasm yet
+    // https://rustwasm.github.io/2018/10/24/multithreading-rust-and-wasm.html
     let _ = thread_handle.join();
 
 }
