@@ -386,6 +386,8 @@ impl Scene {
             starts0[depth] += 1;
         }
         depth_index.reverse();// FIXME
+
+        // no cloning is happening for the single-consumer case
         let _ = bus.try_broadcast(depth_index);
 
         {

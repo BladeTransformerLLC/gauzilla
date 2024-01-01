@@ -18,6 +18,7 @@ use crate::scene::*;
 enum TdCameraControl { Orbit, Fly }
 
 
+/// re-implementation of three_d::OrbitControl to add right mouse button control
 pub struct OrbitControl2 {
     control: CameraControl,
 }
@@ -34,9 +35,8 @@ impl OrbitControl2 {
                     speed: 0.001,
                     target,
                 },
-                // FIXME: the orbit origin does not get translated correctly
-                //right_drag_horizontal: CameraAction::Left { speed: 0.01 },
-                //right_drag_vertical: CameraAction::Up { speed: 0.01 },
+                right_drag_horizontal: CameraAction::Left { speed: 0.01 },
+                right_drag_vertical: CameraAction::Up { speed: 0.01 },
                 ..Default::default()
             },
         }
@@ -44,17 +44,49 @@ impl OrbitControl2 {
 
     /// Handles the events. Must be called each frame.
     pub fn handle_events(&mut self, camera: &mut Camera, events: &mut [Event]) -> bool {
+
+        // need to re-calculate the change so as to translate the target for orbit
+        let mut change = Vec3::zero();
+        for event in events.iter() {
+            match event {
+                Event::MouseMotion {
+                    delta,
+                    button,
+                    handled,
+                    ..
+                } => {
+                    if let Some(b) = button {
+                        if let MouseButton::Right = b {
+                            if let CameraAction::Left { speed } = &self.control.right_drag_horizontal {
+                                change += -camera.right_direction() * delta.0 * (*speed);
+                            }
+                            if let CameraAction::Up { speed } = &self.control.right_drag_vertical {
+                                let right = camera.right_direction();
+                                let up = right.cross(camera.view_direction());
+                                change += up * delta.1 * (*speed);
+                            }
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
         if let CameraAction::Zoom { speed, target, .. } = &mut self.control.scroll_vertical {
             let x = target.distance(*camera.position());
             *speed = 0.001 * x + 0.001;
+            *target += change;
         }
         if let CameraAction::OrbitLeft { speed, target } = &mut self.control.left_drag_horizontal {
             let x = target.distance(*camera.position());
             *speed = 0.01 * x + 0.001;
+            *target += change;
         }
         if let CameraAction::OrbitUp { speed, target } = &mut self.control.left_drag_vertical {
             let x = target.distance(*camera.position());
             *speed = 0.01 * x + 0.001;
+            *target += change;
         }
 
         self.control.handle_events(camera, events)

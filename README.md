@@ -40,13 +40,14 @@ Once the covariance matrix in ray coordinates is obtained via the simple matrix 
 
 #### Orbit Camera Controls:
 ```
-Left mouse button   - Rotate view
+Left mouse button   - Rotate view around target
 Middle mouse button - Zoom in/out
+Right mouse button  - Move left/right/up/down
 ```
 
 #### Fly Camera Controls:
 ```
-Left mouse button   - Rotate view
+Left mouse button   - Change view direction (free-look)
 Middle mouse button - Move forward/backward
 Right mouse button  - Move left/right/up/down
 ```
