@@ -3,6 +3,9 @@ name = "gauzilla"
 version = "0.1.0"
 edition = "2021"
 authors = ["Yoshi Sato <https://www.satyoshi.com>"]
+description = "Gauzilla: a 3D Gaussian Splatting renderer written in Rust for WebAssembly with lock-free multithreading"
+repository = "https://github.com/BladeTransformerLLC/gauzilla"
+license = "MIT"
 
 [lib]
 crate-type = ["cdylib"]
