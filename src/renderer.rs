@@ -504,6 +504,10 @@ pub async fn main() {
                                 ui.label(format!("{:.2}", sort_time));
                                 ui.end_row();
 
+                                ui.add(egui::Label::new("Splat Count"));
+                                ui.label(format!("{}", scene.splat_count));
+                                ui.end_row();
+
                                 ui.add(egui::Label::new("Invert Y"));
                                 ui.checkbox(&mut flip_y, "(flip scene's Y axis)");
                                 ui.end_row();

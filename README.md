@@ -36,7 +36,7 @@ Once the covariance matrix in ray coordinates is obtained via the simple matrix 
 1. Install the nightly version of Rust: `rustup toolchain install nightly`
 2. Install [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) and [sfz](https://github.com/weihanglo/sfz)
 3. Run `./build.sh` and open the locally-served URL in a web browser
-4. Open a PLY file formatted for 3DGS (eg. download the official [pre-trained models](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/datasets/pretrained/models.zip))
+4. Open a PLY file formatted for 3DGS (eg. download the official [pre-trained models](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/datasets/pretrained/models.zip)) or a .splat file (use [this script](https://github.com/antimatter15/splat/blob/main/convert.py) to convert from PLY)
 
 #### Orbit Camera Controls:
 ```
@@ -55,8 +55,8 @@ Right mouse button  - Move left/right/up/down
 
 ## ToDo
 * Optimize `Scene::sort()` and `Scene::generate_texture()` (eg. parallelize using [wasm-bindgen-rayon](https://github.com/GoogleChromeLabs/wasm-bindgen-rayon))
-* Display a progress bar for PLY file loading
-* Implement progressive PLY file loading for web hosting
+* Display a progress bar for file loading
+* Implement asynch/threaded progressive file loading for web hosting
 * Allow camera controls with keyboard
 * Write a WebGPU render path (cf. [splatter](https://github.com/Lichtso/splatter))
 

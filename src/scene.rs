@@ -40,18 +40,16 @@ pub struct Scene {
     pub(crate) tex_width: usize,
     pub(crate) tex_height: usize,
     prev_vp: Mutex<Vec<f32>>,
-    depth_index: Mutex<Vec<u32>>,
 }
 impl Scene {
-    pub fn new(splat_count: usize) -> Self {
+    pub fn new() -> Self {
         Self {
-            splat_count,
+            splat_count: 0,
             buffer: Vec::<u8>::new(),
             tex_data: Vec::<u32>::new(),
             tex_width: 0,
             tex_height: 0,
             prev_vp: Mutex::new(Vec::<f32>::new()),
-            depth_index: Mutex::new(Vec::<u32>::new()),
         }
     }
 
@@ -185,11 +183,6 @@ impl Scene {
             }
         }
         self.buffer = buffer;
-
-        {
-            let mut mutex = self.depth_index.lock().unwrap();
-            (*mutex).resize(self.splat_count, 0);
-        }
     }
 
 
@@ -401,36 +394,48 @@ impl Scene {
 }
 
 
-/// Loads a PLY file and returns a [Scene]
+/// Loads a .ply or .splat file and returns a [Scene]
 pub async fn load_scene() -> Scene {
     /*
     A WebAssembly page has a constant size of 65,536 bytes (or 64KB).
     Therefore, the maximum range that a WASM module can address,
     as WASM currently only allows 32-bit addressing, is 2^16 * 64KB = 4GB.
     */
-    let mut file_header_size = 0_u16;
-    let mut splat_count = 0_usize;
-    let mut cursor = Cursor::new(Vec::<u8>::new());
+    let mut scene = Scene::new();
+
     let file = rfd::AsyncFileDialog::new()
-        .add_filter("ply", &["ply"])
+        .add_filter("3DGS model", &["ply", "splat"])
         .pick_file().await;
     if let Some(f) = file.as_ref() {
-        let bytes = f.read().await;
-        match Scene::parse_file_header(bytes) {
-            Ok((fhs, sc, c)) => {
-                file_header_size = fhs;
-                splat_count = sc;
-                cursor = c;
-            },
-            Err(e) => {
-                log!("load_scene(): ERROR: {}", e);
-                unreachable!();
-            },
+        if f.file_name().contains(".ply") {
+            let mut file_header_size = 0_u16;
+            let mut splat_count = 0_usize;
+            let mut cursor = Cursor::new(Vec::<u8>::new());
+            let bytes = f.read().await;
+            match Scene::parse_file_header(bytes) {
+                Ok((fhs, sc, c)) => {
+                    file_header_size = fhs;
+                    splat_count = sc;
+                    cursor = c;
+                },
+                Err(e) => {
+                    log!("load_scene(): ERROR: {}", e);
+                    unreachable!();
+                },
+            }
+            scene.splat_count = splat_count;
+            scene.load(&mut cursor, file_header_size);
+        } else if f.file_name().contains(".splat") {
+            scene.buffer = f.read().await;
+            scene.splat_count = scene.buffer.len() / 32; // 32bytes per splat
+        } else {
+            unreachable!();
         }
     }
-    let mut scene = Scene::new(splat_count);
-    scene.load(&mut cursor, file_header_size);
+
     scene.generate_texture();
+
+    log!("load_scene(): scene.splat_count={}", scene.splat_count);
 
     scene
 }
