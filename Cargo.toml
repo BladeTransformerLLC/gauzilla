@@ -31,6 +31,16 @@ console_error_panic_hook = { version = "0.1.7", optional = true }
 version = "0.3.65"
 features = [
   'console',
+
+  'Headers',
+  'Request',
+  'RequestInit',
+  'RequestMode',
+  'RequestCredentials',
+  'Response',
+  'Window',
+  'ReadableStream',
+  'ReadableStreamDefaultReader',
 ]
 
 [profile.release]

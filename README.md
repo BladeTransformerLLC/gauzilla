@@ -2,7 +2,7 @@
 A 3D Gaussian Splatting (3DGS) renderer written in Rust for platform-agnostic WebAssembly (WASM) with lock-free multithreading.
 * Uses WebGL and CPU splat sorting (based on [splat](https://github.com/antimatter15/splat)) for high compatibility among web browsers
 * Circumvents [WASM's limitations in multithreading](https://rustwasm.github.io/2018/10/24/multithreading-rust-and-wasm.html) via the use of the lock-free [bus](https://github.com/jonhoo/bus) mechanism
-* Uses [rfd](https://github.com/PolyMeilex/rfd) to securely load PLY files that are stored locally on the host machine
+* Uses [rfd](https://github.com/PolyMeilex/rfd) to securely load .ply or .splat files that are stored locally on the host machine
 
 
 ![Screenshot #1](images/gauzilla_01.png?raw=true "Screenshot #1")
@@ -11,7 +11,7 @@ A 3D Gaussian Splatting (3DGS) renderer written in Rust for platform-agnostic We
 
 
 ## Introduction
-The innovative rendering technique known as 3D Gaussian Splatting (3DGS) [1] represents a Machine Learning-oriented approach to 3D rendering, specifically designed for Novel View Synthesis (NVS). It facilitates the real-time photorealistic rendering of scenes reconstructed from images and videos captured using conventional smartphone cameras. Since its release in 2023 there has been a Cambrian explosion of 3DGS applications and extensions, such as 4DGS [2], D3GA [3], SLAM [4], SC-GS [5], GPS [6], GHA [7], etc.
+The innovative rendering technique known as 3D Gaussian Splatting (3DGS) [1] represents a Machine Learning-oriented approach to 3D rendering, specifically designed for Novel View Synthesis (NVS). It facilitates the real-time photorealistic rendering of scenes reconstructed from images and videos captured using conventional smartphone cameras. Since its release in 2023 there has been a Cambrian explosion of 3DGS applications and extensions, such as 4DGS [2], D3GA [3], SLAM [4], SC-GS [5], GPS [6], GHA [7], etc (see a survey [9]).
 
 One of the original ideas of splatting Gaussian ellipses can be traced back in 2002 [8] and 3DGS uses almost the same approach for its efficient forward rendering on the GPU.
 
@@ -36,7 +36,7 @@ Once the covariance matrix in ray coordinates is obtained via the simple matrix 
 1. Install the nightly version of Rust: `rustup toolchain install nightly`
 2. Install [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) and [sfz](https://github.com/weihanglo/sfz)
 3. Run `./build.sh` and open the locally-served URL in a web browser
-4. Open a PLY file formatted for 3DGS (eg. download the official [pre-trained models](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/datasets/pretrained/models.zip)) or a .splat file (use [this script](https://github.com/antimatter15/splat/blob/main/convert.py) to convert from PLY)
+4. Open a PLY file formatted for 3DGS (eg. download the [official pre-trained models](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/datasets/pretrained/models.zip)) or a .splat file (use [this script](https://github.com/antimatter15/splat/blob/main/convert.py) to convert from PLY)
 
 #### Orbit Camera Controls:
 ```
@@ -70,3 +70,4 @@ Right mouse button  - Move left/right/up/down
 6. Zheng et al., ["GPS-Gaussian: Generalizable Pixel-wise 3D Gaussian Splatting for Real-time Human Novel View Synthesis,"](https://shunyuanzheng.github.io/GPS-Gaussian) 2023.
 7. Xu et al., ["Gaussian Head Avatar: Ultra High-fidelity Head Avatar via Dynamic Gaussians,"](https://yuelangx.github.io/gaussianheadavatar/) 2022.
 8. Zwicker et al., ["EWA Splatting,"](https://vcg.seas.harvard.edu/publications/ewa-splatting) 2002.
+9. Chen & Wang, ["A Survey on 3D Gaussian Splatting,"](https://arxiv.org/abs/2401.03890) 2024.

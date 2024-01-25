@@ -279,7 +279,7 @@ impl Scene {
             ];
 
             // JavaScript typically uses the host system's endianness
-            // (x86-64 and Apple CPUs are little endian).
+            // (x86-64 and Apple CPUs are little-endian).
             // WASM's linear memory is always little-endian.
             texdata[index_f + 4] = pack_half_2x16(4.0*sigma[0], 4.0*sigma[1]); // a, b
             texdata[index_f + 5] = pack_half_2x16(4.0*sigma[2], 4.0*sigma[3]); // c, d
@@ -438,4 +438,88 @@ pub async fn load_scene() -> Scene {
     log!("load_scene(): scene.splat_count={}", scene.splat_count);
 
     scene
+}
+
+
+use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
+use wasm_bindgen_futures::JsFuture;
+use js_sys::{Uint8Array, Object, Boolean};
+
+#[allow(unused_imports)]
+use web_sys::{Headers, Request, RequestInit, RequestMode, RequestCredentials, Response, ReadableStream, ReadableStreamDefaultReader};
+
+
+/// Streams a .splat file via HTTP and returns a [Scene]
+pub async fn stream_splat(url: &str) -> Result<Scene, JsValue> {
+    let mut scene = Scene::new();
+
+    let mut opts = RequestInit::new();
+    opts.method("GET");
+    opts.mode(RequestMode::Cors); // cross-origin
+    opts.credentials(RequestCredentials::Omit);
+
+    let request = Request::new_with_str_and_init(url, &opts)?;
+    let window = web_sys::window().unwrap();
+    let res = JsFuture::from(window.fetch_with_request(&request)).await?; // JavaScript Promise execution
+    let res: Response = res.dyn_into().unwrap();
+
+    let status = res.status();
+    if status != 200 {
+        let err = format!("load_splat(): ERROR: HTTP status={}", status);
+        log!("{}", err.as_str());
+        return Err(JsValue::from_str(err.as_str()));
+    }
+
+    let cl = res.headers().get("content-length")?;
+    let cl: Result<usize, _> = cl.unwrap().parse();
+    let byte_len = cl.unwrap();
+    let splat_count = byte_len / 32;
+    scene.splat_count = splat_count;
+    scene.buffer.resize(byte_len, 0_u8);
+    log!("stream_splat(): byte_len={}", byte_len);
+    log!("stream_splat(): splat_count={}", splat_count);
+
+    /*
+    let array_buffer = JsFuture::from(res.array_buffer()?).await?; // download byte array
+    let uint8_array = Uint8Array::new(&array_buffer);
+    uint8_array.copy_to(&mut scene.buffer);
+    */
+
+    let reader = res.body().unwrap().get_reader();
+    let reader: ReadableStreamDefaultReader = reader.dyn_into().unwrap();
+
+    let start = get_time_milliseconds();
+    let mut bytes_read: usize = 0;
+    loop {
+        let result = JsFuture::from(reader.read()).await?;
+        let result: Object = result.dyn_into().unwrap();
+
+        let done = js_sys::Reflect::get(&result, &JsValue::from_str("done")).unwrap();
+        let done: Boolean = done.dyn_into().unwrap();
+        if done.value_of() {
+            break;
+        }
+
+        let value = js_sys::Reflect::get(&result, &JsValue::from_str("value")).unwrap();
+        let value: Uint8Array = value.dyn_into().unwrap();
+        let chunk = value.to_vec();
+
+        if bytes_read + chunk.len() <= byte_len {
+            scene.buffer[bytes_read..bytes_read+chunk.len()].copy_from_slice(chunk.as_slice());
+        } else {
+            unreachable!();
+        }
+
+        bytes_read += chunk.len();
+
+        //let pct = 100.0*(bytes_read as f64)/(byte_len as f64);
+        //log!("stream_splat(): pct={:.2}%", pct);
+    }
+    let elapsed = 0.001*(get_time_milliseconds() - start);
+    log!("stream_splat(): bytes_read={}, byte_len={}, elapsed={:.2}s", bytes_read, byte_len, elapsed);
+
+    scene.generate_texture();
+
+    Ok(scene)
 }

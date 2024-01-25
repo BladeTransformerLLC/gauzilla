@@ -132,6 +132,23 @@ pub async fn main() {
     let mut egui_control = TdCameraControl::Orbit;
 
     let scene = Arc::new(load_scene().await);
+    /*
+    let mut scene = Scene::new();
+    match stream_splat("https://huggingface.co/cakewalk/splat-data/resolve/main/train.splat").await {
+        Ok(s) => {
+            scene = s;
+        },
+        Err(e) => {
+            let e = e.as_string().unwrap();
+            log!("main(): stream_splat(): {}", e);
+            set_error_for_egui(
+                &error_flag, &error_msg,
+                format!("ERROR: stream_splat(): {}", e)
+            );
+        }
+    }
+    let scene = Arc::new(scene);
+    */
 
     let mut gsplat_program: Option<context::Program> = None;
     let mut u_projection: Option<context::UniformLocation> = None;
