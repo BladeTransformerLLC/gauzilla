@@ -1,13 +1,15 @@
+#[allow(unused_imports)]
 use std::{
-    //time::{Instant, Duration},
-    //io::Cursor,
     sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}},
+    rc::Rc,
+    cell::RefCell,
 };
+
 //use parking_lot::Mutex;
 use three_d::*;
 use wasm_thread as thread;
 use bus::Bus;
-//use rayon::prelude::*;
+use num_format::{Locale, ToFormattedString};
 
 use crate::log; // macro import
 use crate::utils::*;
@@ -131,24 +133,25 @@ pub async fn main() {
     let mut fly_control = FlyControl::new(0.005);
     let mut egui_control = TdCameraControl::Orbit;
 
+    #[cfg(not(feature = "async_splat_stream"))]
     let scene = Arc::new(load_scene().await);
-    /*
-    let mut scene = Scene::new();
-    match stream_splat("https://huggingface.co/cakewalk/splat-data/resolve/main/train.splat").await {
-        Ok(s) => {
-            scene = s;
-        },
-        Err(e) => {
-            let e = e.as_string().unwrap();
-            log!("main(): stream_splat(): {}", e);
-            set_error_for_egui(
-                &error_flag, &error_msg,
-                format!("ERROR: stream_splat(): {}", e)
-            );
-        }
-    }
-    let scene = Arc::new(scene);
-    */
+
+    // TODO: clean cfg
+
+    // lock-free bus for scene buffer (single-send, multi-consumer)
+    #[cfg(feature = "async_splat_stream")]
+    let mut bus_buffer = Bus::<Vec::<u8>>::new(10);
+    #[cfg(feature = "async_splat_stream")]
+    let mut rx_buffer = bus_buffer.add_rx();
+    #[cfg(feature = "async_splat_stream")]
+    let mut rx_buffer2 = bus_buffer.add_rx();
+    // allow interior mutability of scene buffer in callback
+    #[cfg(feature = "async_splat_stream")]
+    let bus_buffer_rc =  Rc::new(RefCell::new(bus_buffer));
+    #[cfg(feature = "async_splat_stream")]
+    let worker_handle = stream_splat_in_worker(bus_buffer_rc);
+    #[cfg(feature = "async_splat_stream")]
+    let mut scene = Arc::new(Scene::new());
 
     let mut gsplat_program: Option<context::Program> = None;
     let mut u_projection: Option<context::UniformLocation> = None;
@@ -297,6 +300,8 @@ pub async fn main() {
             gl.tex_parameter_i32(context::TEXTURE_2D, context::TEXTURE_WRAP_T, context::CLAMP_TO_EDGE as i32);
             gl.tex_parameter_i32(context::TEXTURE_2D, context::TEXTURE_MIN_FILTER, context::NEAREST as i32);
             gl.tex_parameter_i32(context::TEXTURE_2D, context::TEXTURE_MAG_FILTER, context::NEAREST as i32);
+
+            #[cfg(not(feature = "async_splat_stream"))]
             gl.tex_image_2d(
                 context::TEXTURE_2D,
                 0,
@@ -308,12 +313,13 @@ pub async fn main() {
                 context::UNSIGNED_INT,
                 Some(transmute_slice::<_, u8>(scene.tex_data.as_slice()))
             );
+
             //gl.active_texture(context::TEXTURE0);
             //gl.bind_texture(context::TEXTURE_2D, texture);
         }
     }
 
-    // TODO: resize()
+    // TODO: implement resize() for change in window size
 
     // lock-free bus for depth_index
     let mut bus1 = Bus::<Vec<u32>>::new(10);
@@ -329,8 +335,32 @@ pub async fn main() {
 
     // launch another thread for view-dependent splat sorting
     let thread_handle = thread::spawn({
+
+        #[cfg(not(feature = "async_splat_stream"))]
         let scene = scene.clone();
+
+        #[cfg(feature = "async_splat_stream")]
+        let mut scene = scene.clone();
+
         move || loop {
+            // receive splat binary buffer from async JS worker callback
+            #[cfg(feature = "async_splat_stream")]
+            match rx_buffer2.try_recv() {
+                Ok(buffer) => {
+                    /*
+                    FIXME: scene buffer needs to be duplicated here
+                    since Arc<Scene> does not have an interior mutability without a mutex
+                    (and mutex is not allowed in wasm main thread)
+                    */
+                    let mut s = Scene::new();
+                    s.buffer = buffer;
+                    s.splat_count = s.buffer.len() / 32; // 32bytes per splat
+                    //s.generate_texture(); // texture is created instead in render loop in main thread
+                    scene = Arc::new(s);
+                },
+                Err(e) => {},
+            }
+
             // receive view proj matrix from main thread
             match rx2.try_recv() {
                 Ok(view_proj) => {
@@ -370,6 +400,41 @@ pub async fn main() {
     window.render_loop(move |mut frame_input| {
         let error_flag = Arc::clone(&error_flag);
         let error_msg = Arc::clone(&error_msg);
+
+        /////////////////////////////////////////////////////////////////////////////////////
+        // receive splat binary buffer from async JS worker callback
+        #[cfg(feature = "async_splat_stream")]
+        match rx_buffer.try_recv() {
+            Ok(buffer) => {
+                let mut s = Scene::new();
+                s.buffer = buffer;
+                s.splat_count = s.buffer.len() / 32; // 32bytes per splat
+                s.generate_texture();
+                scene = Arc::new(s);
+
+                unsafe {
+                    gl.bind_texture(context::TEXTURE_2D, texture);
+                    gl.tex_image_2d(
+                        context::TEXTURE_2D,
+                        0,
+                        context::RGBA32UI as i32,
+                        scene.tex_width as i32,
+                        scene.tex_height as i32,
+                        0,
+                        context::RGBA_INTEGER,
+                        context::UNSIGNED_INT,
+                        Some(transmute_slice::<_, u8>(scene.tex_data.as_slice()))
+                    );
+                }
+
+                // no longer need to receive buffer
+                worker_handle.terminate();
+
+                send_view_proj = true;
+            },
+            Err(e) => {},
+        }
+        /////////////////////////////////////////////////////////////////////////////////////
 
         let now =  get_time_milliseconds();
         let fps =  1000.0 / (now - frame_prev);
@@ -517,16 +582,28 @@ pub async fn main() {
                                 ui.label(format!("{:.2}", fps));
                                 ui.end_row();
 
-                                ui.add(egui::Label::new("CPU sort time (ms)"));
+                                ui.add(egui::Label::new("CPU Sort Time (ms)"));
                                 ui.label(format!("{:.2}", sort_time));
                                 ui.end_row();
 
+                                ui.add(egui::Label::new("CPU Cores"));
+                                ui.label(format!("{}", cpu_cores));
+                                ui.end_row();
+
+                                ui.add(egui::Label::new("GL Version"));
+                                ui.label(format!("{:?}", gl.version()));
+                                ui.end_row();
+
                                 ui.add(egui::Label::new("Splat Count"));
-                                ui.label(format!("{}", scene.splat_count));
+                                ui.label(format!("{}", scene.splat_count.to_formatted_string(&Locale::en)));
+                                ui.end_row();
+
+                                ui.add(egui::Label::new("Splat Scale"));
+                                ui.add(egui::Slider::new(&mut splat_scale, 0.1..=1.0));
                                 ui.end_row();
 
                                 ui.add(egui::Label::new("Invert Y"));
-                                ui.checkbox(&mut flip_y, "(flip scene's Y axis)");
+                                ui.checkbox(&mut flip_y, "");
                                 ui.end_row();
 
                                 ui.add(egui::Label::new("Window Size"));
@@ -554,10 +631,6 @@ pub async fn main() {
 
                                 ui.add(egui::Label::new("Camera Roll"));
                                 ui.add(egui::Slider::new(&mut cam_roll, -180.0..=180.0).suffix("°"));
-                                ui.end_row();
-
-                                ui.add(egui::Label::new("Splat Scale"));
-                                ui.add(egui::Slider::new(&mut splat_scale, 0.1..=1.0));
                                 ui.end_row();
 
                                 ui.add(egui::Label::new("GitHub"));

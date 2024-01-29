@@ -450,7 +450,7 @@ use js_sys::{Uint8Array, Object, Boolean};
 use web_sys::{Headers, Request, RequestInit, RequestMode, RequestCredentials, Response, ReadableStream, ReadableStreamDefaultReader};
 
 
-/// Streams a .splat file via HTTP and returns a [Scene]
+/// Streams a .splat file via HTTP and returns a [Scene] (blocking, only works in main thread)
 pub async fn stream_splat(url: &str) -> Result<Scene, JsValue> {
     let mut scene = Scene::new();
 
@@ -461,6 +461,7 @@ pub async fn stream_splat(url: &str) -> Result<Scene, JsValue> {
 
     let request = Request::new_with_str_and_init(url, &opts)?;
     let window = web_sys::window().unwrap();
+
     let res = JsFuture::from(window.fetch_with_request(&request)).await?; // JavaScript Promise execution
     let res: Response = res.dyn_into().unwrap();
 
@@ -522,4 +523,55 @@ pub async fn stream_splat(url: &str) -> Result<Scene, JsValue> {
     scene.generate_texture();
 
     Ok(scene)
+}
+
+
+use std::{rc::Rc, cell::RefCell};
+use web_sys::{Worker, MessageEvent};
+use js_sys::Number;
+
+
+/// Streams a .splat file via HTTP in Worker (non-blocking)
+/// Sends downloaded bytes to the main thread via a [Bus]
+pub fn stream_splat_in_worker(bus: Rc<RefCell<Bus<Vec::<u8>>>>) -> Worker {
+    let callback_handle = onmessage(bus);
+
+    let worker_handle = Worker::new("/downloader.js").unwrap();
+    worker_handle.set_onmessage(Some(callback_handle.as_ref().unchecked_ref()));
+
+    callback_handle.forget(); // avoid being dropped prematurely
+
+    worker_handle
+}
+
+
+fn onmessage(bus: Rc<RefCell<Bus<Vec::<u8>>>>) -> Closure<dyn FnMut(MessageEvent) + 'static> {
+    let callback = Closure::wrap(Box::new(move |event: MessageEvent| {
+        let data = event.data(); // JsValue
+        let data: Object = data.dyn_into().unwrap();
+
+        // bytes downloaded
+        let bytes = js_sys::Reflect::get(&data, &JsValue::from_str("bytes")).unwrap();
+        let bytes: Number = bytes.dyn_into().unwrap();
+        let bytes = bytes.value_of() as usize;
+
+        // buffer (fixed length)
+        let buffer = js_sys::Reflect::get(&data, &JsValue::from_str("buffer")).unwrap();
+        let buffer: Uint8Array = buffer.dyn_into().unwrap();
+        let buffer: Vec::<u8> = buffer.to_vec();
+
+        //let pct = 100.0*(bytes as f64)/(buffer.len() as f64);
+        //log!("onmessage(): pct={:.2}%", pct);
+
+        if bytes == buffer.len() {
+            log!("onmessage(): download complete");
+            //////////////////////////////////
+            // non-blocking (i.e., no atomic.wait)
+            let mut bus = bus.as_ref().borrow_mut();
+            let _ = bus.try_broadcast(buffer);
+            //////////////////////////////////
+        }
+    }) as Box<dyn FnMut(_)>);
+
+    callback
 }

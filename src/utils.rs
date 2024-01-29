@@ -47,7 +47,7 @@ pub fn set_error_for_egui(flag: &Arc<AtomicBool>, msg: &Arc<Mutex<String>>, s: S
 }
 
 
-/// Executes an asyncs Future on the current thread
+/// Executes an async Future on the current thread
 #[inline(always)]
 pub fn execute_future<F: Future<Output = ()> + 'static>(f: F) {
     wasm_bindgen_futures::spawn_local(f);

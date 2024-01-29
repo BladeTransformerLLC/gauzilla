@@ -11,21 +11,24 @@ license = "MIT"
 crate-type = ["cdylib"]
 
 [features]
-default = ["console_error_panic_hook", "wasm_thread/es_modules"]
+default = [
+  "console_error_panic_hook",
+  #"async_splat_stream",
+]
+async_splat_stream = []
 
 [dependencies]
 js-sys = "0.3.65"
 wasm-bindgen = "0.2.88"
 wasm-bindgen-futures = "0.4.38"
-wasm_thread = "0.2.0"
+wasm_thread = { version = "0.2.0", features = ["es_modules"] }
 #parking_lot = { version = "0.12", features = ["nightly"] }
-#rayon = "1.8.0"
-#wasm-bindgen-rayon = "1.0.3"
 bus = "2.4.1"
 three-d = { version = "0.16.3", features = ["egui-gui"] }
 rfd = "0.12.1"
 half = "2.3.1"
 console_error_panic_hook = { version = "0.1.7", optional = true }
+num-format = "0.4.4"
 
 [dependencies.web-sys]
 version = "0.3.65"
@@ -41,6 +44,9 @@ features = [
   'Window',
   'ReadableStream',
   'ReadableStreamDefaultReader',
+
+  'Worker',
+  'MessageEvent',
 ]
 
 [profile.release]
