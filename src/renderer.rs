@@ -8,7 +8,7 @@ use std::{
 //use parking_lot::Mutex;
 use three_d::*;
 use wasm_thread as thread;
-use bus::Bus;
+use bus::{Bus, BusReader};
 use num_format::{Locale, ToFormattedString};
 
 use crate::log; // macro import
@@ -20,7 +20,7 @@ use crate::scene::*;
 enum TdCameraControl { Orbit, Fly }
 
 
-/// re-implementation of three_d::OrbitControl to add right mouse button control
+/// Re-implementation of three_d::OrbitControl to add right mouse button control
 pub struct OrbitControl2 {
     control: CameraControl,
 }
@@ -96,11 +96,68 @@ impl OrbitControl2 {
 }
 
 
+#[allow(unused_mut)]
+fn launch_sorter_thread(
+    scene: Arc<Scene>,
+    mut rx_buffer: BusReader<Vec<u8>>,
+    mut rx_vp: BusReader<Mat4>,
+    mut bus_depth: Bus<Vec<u32>>,
+    cpu_cores: usize,
+    mut bus_time: Bus<f64>,
+) -> thread::JoinHandle<()> {
+    // launch another thread for view-dependent splat sorting
+    let thread_handle = thread::spawn({
+        let mut scene = scene.clone();
+
+        move || loop {
+            // receive splat binary buffer from async JS worker callback
+            #[cfg(feature = "async_splat_stream")]
+            if let Ok(buffer) = rx_buffer.try_recv() {
+                /*
+                FIXME: scene buffer needs to be duplicated here
+                since Arc<Scene> does not have an interior mutability without a mutex
+                (and mutex is not allowed in wasm main thread)
+                */
+                let mut s = Scene::new();
+                s.buffer = buffer;
+                s.splat_count = s.buffer.len() / 32; // 32bytes per splat
+                //s.generate_texture(); // texture is created instead in render loop in main thread
+                scene = Arc::new(s);
+            }
+
+            // receive view proj matrix from main thread
+            if let Ok(view_proj) = rx_vp.try_recv() {
+                let view_proj_slice = &[
+                    view_proj[0][0], view_proj[0][1], view_proj[0][2], view_proj[0][3],
+                    view_proj[1][0], view_proj[1][1], view_proj[1][2], view_proj[1][3],
+                    view_proj[2][0], view_proj[2][1], view_proj[2][2], view_proj[2][3],
+                    view_proj[3][0], view_proj[3][1], view_proj[3][2], view_proj[3][3]
+                ];
+                let start =  get_time_milliseconds();
+                /*
+                Reloading the page with Ctrl+F5 after finishing loading a ply/splat file
+                increases the sort performance by ~100% (thanks to cache?)
+                */
+                Scene::sort(&scene, view_proj_slice, &mut bus_depth, cpu_cores);
+                let sort_time = get_time_milliseconds() - start;
+                //////////////////////////////////
+                // non-blocking (i.e., no atomic.wait)
+                let _ = bus_time.try_broadcast(sort_time);
+                //////////////////////////////////
+            }
+        }
+    });
+
+    thread_handle
+}
+
+
+#[allow(unused_mut)]
 pub async fn main() {
     let error_flag = Arc::new(AtomicBool::new(false));
     let error_msg = Arc::new(Mutex::new(String::new()));
 
-    let cpu_cores = cpu_cores();
+    let cpu_cores = cpu_cores() as usize;
     log!("main(): cpu_cores={}", cpu_cores);
 
     let canvas_w = get_canvas_width();
@@ -133,25 +190,23 @@ pub async fn main() {
     let mut fly_control = FlyControl::new(0.005);
     let mut egui_control = TdCameraControl::Orbit;
 
-    #[cfg(not(feature = "async_splat_stream"))]
-    let scene = Arc::new(load_scene().await);
-
-    // TODO: clean cfg
-
-    // lock-free bus for scene buffer (single-send, multi-consumer)
-    #[cfg(feature = "async_splat_stream")]
-    let mut bus_buffer = Bus::<Vec::<u8>>::new(10);
-    #[cfg(feature = "async_splat_stream")]
+    // lock-free bus for streamed scene buffer (single-send, multi-consumer)
+    let mut bus_buffer = Bus::<Vec::<u8>>::new(1);
+    let rx_buffer_threaded = bus_buffer.add_rx();
     let mut rx_buffer = bus_buffer.add_rx();
-    #[cfg(feature = "async_splat_stream")]
-    let mut rx_buffer2 = bus_buffer.add_rx();
-    // allow interior mutability of scene buffer in callback
-    #[cfg(feature = "async_splat_stream")]
     let bus_buffer_rc =  Rc::new(RefCell::new(bus_buffer));
+
+    // lock-free bus for scene buffer (single-send, single-consumer)
+    let mut bus_progress = Bus::<f64>::new(1);
+    let mut rx_progress = bus_progress.add_rx();
+    let bus_progress_rc =  Rc::new(RefCell::new(bus_progress));
+
     #[cfg(feature = "async_splat_stream")]
-    let worker_handle = stream_splat_in_worker(bus_buffer_rc);
+    let worker_handle = stream_splat_in_worker(bus_buffer_rc, bus_progress_rc);
     #[cfg(feature = "async_splat_stream")]
     let mut scene = Arc::new(Scene::new());
+    #[cfg(not(feature = "async_splat_stream"))]
+    let scene = Arc::new(load_scene().await);
 
     let mut gsplat_program: Option<context::Program> = None;
     let mut u_projection: Option<context::UniformLocation> = None;
@@ -161,7 +216,6 @@ pub async fn main() {
     let mut u_view: Option<context::UniformLocation> = None;
     let mut u_cam_pos: Option<context::UniformLocation> = None;
     let mut u_splat_scale: Option<context::UniformLocation> = None;
-    //let mut u_sign_y: Option<context::UniformLocation> = None;
 
     let mut vertex_buffer: Option<context::WebBufferKey> = None;
     let mut a_position: u32 = 0;
@@ -322,63 +376,25 @@ pub async fn main() {
     // TODO: implement resize() for change in window size
 
     // lock-free bus for depth_index
-    let mut bus1 = Bus::<Vec<u32>>::new(10);
-    let mut rx1 = bus1.add_rx();
+    let mut bus_depth_threaded = Bus::<Vec<u32>>::new(10);
+    let mut rx_depth = bus_depth_threaded.add_rx();
 
     // lock-free bus for view_proj_slice
-    let mut bus2 = Bus::<Mat4>::new(10);
-    let mut rx2 = bus2.add_rx();
+    let mut bus_vp = Bus::<Mat4>::new(10);
+    let rx_vp_threaded: BusReader<Matrix4<f32>> = bus_vp.add_rx();
 
     // lock-free bus for sort_time
-    let mut bus3 = Bus::<f64>::new(10);
-    let mut rx3 = bus3.add_rx();
+    let mut bus_time_threaded = Bus::<f64>::new(10);
+    let mut rx_time = bus_time_threaded.add_rx();
 
-    // launch another thread for view-dependent splat sorting
-    let thread_handle = thread::spawn({
-
-        #[cfg(not(feature = "async_splat_stream"))]
-        let scene = scene.clone();
-
-        #[cfg(feature = "async_splat_stream")]
-        let mut scene = scene.clone();
-
-        move || loop {
-            // receive splat binary buffer from async JS worker callback
-            #[cfg(feature = "async_splat_stream")]
-            match rx_buffer2.try_recv() {
-                Ok(buffer) => {
-                    /*
-                    FIXME: scene buffer needs to be duplicated here
-                    since Arc<Scene> does not have an interior mutability without a mutex
-                    (and mutex is not allowed in wasm main thread)
-                    */
-                    let mut s = Scene::new();
-                    s.buffer = buffer;
-                    s.splat_count = s.buffer.len() / 32; // 32bytes per splat
-                    //s.generate_texture(); // texture is created instead in render loop in main thread
-                    scene = Arc::new(s);
-                },
-                Err(e) => {},
-            }
-
-            // receive view proj matrix from main thread
-            match rx2.try_recv() {
-                Ok(view_proj) => {
-                    let view_proj_slice = &[
-                        view_proj[0][0], view_proj[0][1], view_proj[0][2], view_proj[0][3],
-                        view_proj[1][0], view_proj[1][1], view_proj[1][2], view_proj[1][3],
-                        view_proj[2][0], view_proj[2][1], view_proj[2][2], view_proj[2][3],
-                        view_proj[3][0], view_proj[3][1], view_proj[3][2], view_proj[3][3]
-                    ];
-                    let start =  get_time_milliseconds();
-                    Scene::sort(&scene, view_proj_slice, &mut bus1, cpu_cores);
-                    let sort_time = get_time_milliseconds() - start;
-                    let _ = bus3.try_broadcast(sort_time);
-                },
-                Err(e) => {},
-            }
-        }
-    });
+    let thread_handle = launch_sorter_thread(
+        scene.clone(),
+        rx_buffer_threaded,
+        rx_vp_threaded,
+        bus_depth_threaded,
+        cpu_cores,
+        bus_time_threaded,
+    );
 
     /////////////////////////////////////////////////////////////////////////////////
 
@@ -388,24 +404,32 @@ pub async fn main() {
     let mut cam_roll = 0_f32;
     let mut prev_cam_roll = 0_f32;
     let mut flip_y = true;
-
     let mut frame_prev = get_time_milliseconds();
     let mut fps_ma = IncrementalMA::new(100);
-
     let mut sort_time = 0_f64;
     let mut sort_time_ma = IncrementalMA::new(100);
-
     let mut send_view_proj: bool = true;
+    let mut progress = 0_f64;
+
+    #[cfg(not(feature = "async_splat_stream"))]
+    let done_streaming = true;
+    #[cfg(feature = "async_splat_stream")]
+    let mut done_streaming = false;
 
     window.render_loop(move |mut frame_input| {
         let error_flag = Arc::clone(&error_flag);
         let error_msg = Arc::clone(&error_msg);
 
-        /////////////////////////////////////////////////////////////////////////////////////
-        // receive splat binary buffer from async JS worker callback
-        #[cfg(feature = "async_splat_stream")]
-        match rx_buffer.try_recv() {
-            Ok(buffer) => {
+        let now =  get_time_milliseconds();
+        let fps =  1000.0 / (now - frame_prev);
+        frame_prev = now;
+        let fps = fps_ma.add(fps);
+
+        if !error_flag.load(Ordering::Relaxed) {
+            /////////////////////////////////////////////////////////////////////////////////////
+            // receive splat binary buffer from async JS worker callback
+            #[cfg(feature = "async_splat_stream")]
+            if let Ok(buffer) = rx_buffer.try_recv() {
                 let mut s = Scene::new();
                 s.buffer = buffer;
                 s.splat_count = s.buffer.len() / 32; // 32bytes per splat
@@ -431,72 +455,72 @@ pub async fn main() {
                 worker_handle.terminate();
 
                 send_view_proj = true;
-            },
-            Err(e) => {},
-        }
-        /////////////////////////////////////////////////////////////////////////////////////
+                done_streaming = true;
+            }
 
-        let now =  get_time_milliseconds();
-        let fps =  1000.0 / (now - frame_prev);
-        frame_prev = now;
-        let fps = fps_ma.add(fps);
+            // receive progress from async JS worker callback
+            #[cfg(feature = "async_splat_stream")]
+            if let Ok(pct) = rx_progress.try_recv() {
+                progress = pct;
+            }
 
-        // receive sort_time from the second thread
-        match rx3.try_recv() {
-            Ok(f) => sort_time = sort_time_ma.add(f),
-            Err(e) => {},
-        }
+            // receive sort_time from the second thread
+            if let Ok(f) = rx_time.try_recv() {
+                sort_time = sort_time_ma.add(f);
+            }
+            /////////////////////////////////////////////////////////////////////////////////////
 
-        camera.set_viewport(frame_input.viewport);
+            camera.set_viewport(frame_input.viewport);
 
-        for event in frame_input.events.iter() {
-            send_view_proj = true;
+            for event in frame_input.events.iter() {
+                send_view_proj = true;
 
-            /*
-            if let Event::MousePress {
-                button,
-                position,
-                modifiers,
-                ..
-            } = event
-            {
-                if *button == MouseButton::Right && !modifiers.ctrl {
-                    log!("right mouse button pressed at {:?}", position);
+                /*
+                if let Event::MousePress {
+                    button,
+                    position,
+                    modifiers,
+                    ..
+                } = event
+                {
+                    if *button == MouseButton::Right && !modifiers.ctrl {
+                        log!("right mouse button pressed at {:?}", position);
+                    }
+                }
+                */
+
+                /*
+                if let Event::MouseMotion {
+                    delta,
+                    button,
+                    handled,
+                    ..
+                } = event {
+                }
+                */
+            }
+
+            if !pointer_over_gui {
+                match egui_control {
+                    TdCameraControl::Orbit => {
+                        orbit_control.handle_events(&mut camera, &mut frame_input.events);
+                    },
+                    TdCameraControl::Fly => {
+                        fly_control.handle_events(&mut camera, &mut frame_input.events);
+                    },
                 }
             }
-            */
 
-            /*
-            if let Event::MouseMotion {
-                delta,
-                button,
-                handled,
-                ..
-            } = event {
+            if flip_y {
+                //camera.mirror_in_xz_plane(); // FIXME
+                camera.roll(degrees(180.0));
+                flip_y = false;
             }
-            */
-        }
-
-        if !pointer_over_gui {
-            match egui_control {
-                TdCameraControl::Orbit => {
-                    orbit_control.handle_events(&mut camera, &mut frame_input.events);
-                },
-                TdCameraControl::Fly => {
-                    fly_control.handle_events(&mut camera, &mut frame_input.events);
-                },
+            if !are_floats_equal(cam_roll, prev_cam_roll, 0.00001) {
+                camera.roll(degrees(-prev_cam_roll));
+                camera.roll(degrees(cam_roll));
+                prev_cam_roll = cam_roll;
             }
-        }
-
-        if flip_y {
-            //camera.mirror_in_xz_plane(); // FIXME
-            camera.roll(degrees(180.0));
-            flip_y = false;
-        }
-        if !are_floats_equal(cam_roll, prev_cam_roll, 0.00001) {
-            camera.roll(degrees(-prev_cam_roll));
-            camera.roll(degrees(cam_roll));
-            prev_cam_roll = cam_roll;
         }
 
         let view_matrix: &Mat4 = camera.view();
@@ -506,7 +530,6 @@ pub async fn main() {
             view_matrix[2][0], view_matrix[2][1], view_matrix[2][2], view_matrix[2][3],
             view_matrix[3][0], view_matrix[3][1], view_matrix[3][2], view_matrix[3][3]
         ];
-
         let projection_matrix: &Mat4 = camera.projection();
         let projection_slice = &[
             projection_matrix[0][0], projection_matrix[0][1], projection_matrix[0][2], projection_matrix[0][3],
@@ -514,7 +537,6 @@ pub async fn main() {
             projection_matrix[2][0], projection_matrix[2][1], projection_matrix[2][2], projection_matrix[2][3],
             projection_matrix[3][0], projection_matrix[3][1], projection_matrix[3][2], projection_matrix[3][3]
         ];
-
         let w = camera.viewport().width as f32;
         let h = camera.viewport().height as f32;
         let cam_pos = camera.position();
@@ -532,13 +554,13 @@ pub async fn main() {
             |gui_context| {
                 pointer_over_gui = gui_context.is_using_pointer();//.is_pointer_over_area();
 
-                // TODO: change font color
                 if error_flag.load(Ordering::Relaxed) {
                     egui::Window::new("Error")
+                        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                         .show(gui_context, |ui| {
                             {
                                 let mutex = error_msg.lock().unwrap();
-                                ui.label(&(*mutex));
+                                ui.colored_label(egui::Color32::RED, &(*mutex))
                             }
                             /*
                             if ui.button("Ok").clicked() {
@@ -547,116 +569,130 @@ pub async fn main() {
                             */
                         });
                 } else {
-                    egui::Window::new("Gauzilla").vscroll(true).show(gui_context, |ui| {
-                        /*
-                        // TODO: open a PLY file as bytes and process it
-                        if ui.button("Open PLY file").clicked() {
-                            let task = rfd::AsyncFileDialog::new()
-                                .add_filter("ply", &["ply"])
-                                .pick_file();
-                            execute_future(async move {
-                                let file = task.await;
-                                if let Some(f) = file {
-                                    let bytes = f.read().await;
-                                    match Scene::parse_file_header(bytes) {
-                                        Ok((file_header_size, splat_count, mut cursor)) => {
+                    if !done_streaming {
+                        egui::Window::new("Loading...")
+                            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                            .show(gui_context, |ui| {
+                                let progress_bar = egui::ProgressBar::new(progress as f32)
+                                    .show_percentage()
+                                    .animate(false);
+                                ui.add(progress_bar);
 
-                                        },
-                                        Err(s) => set_error_for_egui(
-                                            &error_flag, &error_msg, String::from("ERROR: could not open the selected file.\
-                                            Choose a correctly formatted PLY file for 3D Gaussian Splatting.")
-                                        ),
+                            });
+                    } else {
+                        egui::Window::new("Gauzilla")
+                            //.vscroll(true)
+                            .show(gui_context, |ui| {
+                            /*
+                            // TODO: open a PLY file as bytes and process it
+                            if ui.button("Open PLY file").clicked() {
+                                let task = rfd::AsyncFileDialog::new()
+                                    .add_filter("ply", &["ply"])
+                                    .pick_file();
+                                execute_future(async move {
+                                    let file = task.await;
+                                    if let Some(f) = file {
+                                        let bytes = f.read().await;
+                                        match Scene::parse_file_header(bytes) {
+                                            Ok((file_header_size, splat_count, mut cursor)) => {
+
+                                            },
+                                            Err(s) => set_error_for_egui(
+                                                &error_flag, &error_msg, String::from("ERROR: could not open the selected file.\
+                                                Choose a correctly formatted PLY file for 3D Gaussian Splatting.")
+                                            ),
+                                        }
                                     }
-                                }
-                            });
-                            ui.close_menu();
-                        }
-                        */
-
-                        egui::Grid::new("my_grid")
-                            .num_columns(2)
-                            .spacing([40.0, 4.0])
-                            .striped(true)
-                            .show(ui, |ui| {
-                                ui.add(egui::Label::new("FPS"));
-                                ui.label(format!("{:.2}", fps));
-                                ui.end_row();
-
-                                ui.add(egui::Label::new("CPU Sort Time (ms)"));
-                                ui.label(format!("{:.2}", sort_time));
-                                ui.end_row();
-
-                                ui.add(egui::Label::new("CPU Cores"));
-                                ui.label(format!("{}", cpu_cores));
-                                ui.end_row();
-
-                                ui.add(egui::Label::new("GL Version"));
-                                ui.label(format!("{:?}", gl.version()));
-                                ui.end_row();
-
-                                ui.add(egui::Label::new("Splat Count"));
-                                ui.label(format!("{}", scene.splat_count.to_formatted_string(&Locale::en)));
-                                ui.end_row();
-
-                                ui.add(egui::Label::new("Splat Scale"));
-                                ui.add(egui::Slider::new(&mut splat_scale, 0.1..=1.0));
-                                ui.end_row();
-
-                                ui.add(egui::Label::new("Invert Y"));
-                                ui.checkbox(&mut flip_y, "");
-                                ui.end_row();
-
-                                ui.add(egui::Label::new("Window Size"));
-                                ui.label(format!("{}x{}", w, h));
-                                ui.end_row();
-
-                                ui.add(egui::Label::new("Focal"));
-                                ui.label(format!("({:.2}, {:.2})", fx, fy));
-                                ui.end_row();
-
-                                ui.add(egui::Label::new("Htan FOV"));
-                                ui.label(format!("({:.2}, {:.2})", htanx, htany));
-                                ui.end_row();
-
-                                ui.add(egui::Label::new("Camera Position"));
-                                ui.label(format!("({:.2}, {:.2}, {:.2})", cam_pos.x, cam_pos.y, cam_pos.z));
-                                ui.end_row();
-
-                                ui.add(egui::Label::new("Camera Control"));
-                                ui.horizontal(|ui| {
-                                    ui.radio_value(&mut egui_control, TdCameraControl::Orbit, "Orbit");
-                                    ui.radio_value(&mut egui_control, TdCameraControl::Fly, "Fly");
                                 });
-                                ui.end_row();
+                                ui.close_menu();
+                            }
+                            */
 
-                                ui.add(egui::Label::new("Camera Roll"));
-                                ui.add(egui::Slider::new(&mut cam_roll, -180.0..=180.0).suffix("°"));
-                                ui.end_row();
+                            egui::Grid::new("my_grid")
+                                .num_columns(2)
+                                .spacing([40.0, 4.0])
+                                .striped(true)
+                                .show(ui, |ui| {
+                                    ui.add(egui::Label::new("FPS"));
+                                    ui.label(format!("{:.2}", fps));
+                                    ui.end_row();
 
-                                ui.add(egui::Label::new("GitHub"));
-                                use egui::special_emojis::GITHUB;
-                                ui.hyperlink_to(
-                                    format!("{GITHUB} BladeTransformerLLC/gauzilla"),
-                                    "https://github.com/BladeTransformerLLC/gauzilla",
-                                );
-                                ui.end_row();
-                            });
-                    });
+                                    ui.add(egui::Label::new("CPU Sort Time (ms)"));
+                                    ui.label(format!("{:.2}", sort_time));
+                                    ui.end_row();
+
+                                    ui.add(egui::Label::new("CPU Cores"));
+                                    ui.label(format!("{}", cpu_cores));
+                                    ui.end_row();
+
+                                    ui.add(egui::Label::new("GL Version"));
+                                    ui.label(format!("{:?}", gl.version()));
+                                    ui.end_row();
+
+                                    ui.add(egui::Label::new("Splat Count"));
+                                    ui.label(format!("{}", scene.splat_count.to_formatted_string(&Locale::en)));
+                                    ui.end_row();
+
+                                    ui.add(egui::Label::new("Splat Scale"));
+                                    ui.add(egui::Slider::new(&mut splat_scale, 0.1..=1.0));
+                                    ui.end_row();
+
+                                    ui.add(egui::Label::new("Invert Y"));
+                                    ui.checkbox(&mut flip_y, "");
+                                    ui.end_row();
+
+                                    ui.add(egui::Label::new("Window Size"));
+                                    ui.label(format!("{}x{}", w, h));
+                                    ui.end_row();
+
+                                    ui.add(egui::Label::new("Focal"));
+                                    ui.label(format!("({:.2}, {:.2})", fx, fy));
+                                    ui.end_row();
+
+                                    ui.add(egui::Label::new("Htan FOV"));
+                                    ui.label(format!("({:.2}, {:.2})", htanx, htany));
+                                    ui.end_row();
+
+                                    ui.add(egui::Label::new("Camera Position"));
+                                    ui.label(format!("({:.2}, {:.2}, {:.2})", cam_pos.x, cam_pos.y, cam_pos.z));
+                                    ui.end_row();
+
+                                    ui.add(egui::Label::new("Camera Control"));
+                                    ui.horizontal(|ui| {
+                                        ui.radio_value(&mut egui_control, TdCameraControl::Orbit, "Orbit");
+                                        ui.radio_value(&mut egui_control, TdCameraControl::Fly, "Fly");
+                                    });
+                                    ui.end_row();
+
+                                    ui.add(egui::Label::new("Camera Roll"));
+                                    ui.add(egui::Slider::new(&mut cam_roll, -180.0..=180.0).suffix("°"));
+                                    ui.end_row();
+
+                                    ui.add(egui::Label::new("GitHub"));
+                                    use egui::special_emojis::GITHUB;
+                                    ui.hyperlink_to(
+                                        format!("{GITHUB} BladeTransformerLLC/gauzilla"),
+                                        "https://github.com/BladeTransformerLLC/gauzilla",
+                                    );
+                                    ui.end_row();
+                                });
+                        });
+                    }
                 }
             },
         );
 
-        // send view_proj to thread only when it's changed by user input
-        if send_view_proj {
-            let view_proj = projection_matrix * view_matrix;
-            //////////////////////////////////
-            // non-blocking (i.e., no atomic.wait)
-            let _ = bus2.try_broadcast(view_proj);
-            //////////////////////////////////
-            send_view_proj = false;
-        }
-
         if !error_flag.load(Ordering::Relaxed) {
+            // send view_proj to thread only when it's changed by user input
+            if done_streaming && send_view_proj  {
+                let view_proj = projection_matrix * view_matrix;
+                //////////////////////////////////
+                // non-blocking (i.e., no atomic.wait)
+                let _ = bus_vp.try_broadcast(view_proj);
+                //////////////////////////////////
+                send_view_proj = false;
+            }
+
             unsafe {
                 gl.viewport(0, 0, w as i32, h as i32);
                 gl.clear(context::COLOR_BUFFER_BIT);
@@ -705,15 +741,12 @@ pub async fn main() {
                     gl.bind_buffer(context::ARRAY_BUFFER, index_buffer);
                     //////////////////////////////////
                     // non-blocking (i.e., no atomic.wait)
-                    match rx1.try_recv() {
-                        Ok(depth_index) => {
-                            gl.buffer_data_u8_slice(
-                                context::ARRAY_BUFFER,
-                                transmute_slice::<_, u8>(depth_index.as_slice()),
-                                context::DYNAMIC_DRAW
-                            );
-                        },
-                        Err(e) => {},
+                    if let Ok(depth_index) = rx_depth.try_recv() {
+                        gl.buffer_data_u8_slice(
+                            context::ARRAY_BUFFER,
+                            transmute_slice::<_, u8>(depth_index.as_slice()),
+                            context::DYNAMIC_DRAW
+                        );
                     }
                     //////////////////////////////////
                     gl.vertex_attrib_pointer_i32(a_index, 1, context::INT, 0, 0);

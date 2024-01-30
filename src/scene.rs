@@ -293,7 +293,7 @@ impl Scene {
 
 
     /// Sorts the splats based on their depth using 16-bit single-pass counting sort
-    pub fn sort(scene: &Arc<Self>, view_proj: &[f32], bus: &mut Bus<Vec<u32>>, n_threads: u32) {
+    pub fn sort(scene: &Arc<Self>, view_proj: &[f32], bus: &mut Bus<Vec<u32>>, n_threads: usize) {
         if scene.buffer.is_empty() {
             return;
         }
@@ -380,8 +380,10 @@ impl Scene {
         }
         depth_index.reverse();// FIXME
 
+        //////////////////////////////////
         // no cloning is happening for the single-consumer case
         let _ = bus.try_broadcast(depth_index);
+        //////////////////////////////////
 
         {
             let mut mutex = scene.prev_vp.lock().unwrap();
@@ -533,8 +535,11 @@ use js_sys::Number;
 
 /// Streams a .splat file via HTTP in Worker (non-blocking)
 /// Sends downloaded bytes to the main thread via a [Bus]
-pub fn stream_splat_in_worker(bus: Rc<RefCell<Bus<Vec::<u8>>>>) -> Worker {
-    let callback_handle = onmessage(bus);
+pub fn stream_splat_in_worker(
+    bus_buffer: Rc<RefCell<Bus<Vec::<u8>>>>,
+    bus_progress: Rc<RefCell<Bus<f64>>>
+) -> Worker {
+    let callback_handle = onmessage(bus_buffer, bus_progress);
 
     let worker_handle = Worker::new("/downloader.js").unwrap();
     worker_handle.set_onmessage(Some(callback_handle.as_ref().unchecked_ref()));
@@ -545,7 +550,10 @@ pub fn stream_splat_in_worker(bus: Rc<RefCell<Bus<Vec::<u8>>>>) -> Worker {
 }
 
 
-fn onmessage(bus: Rc<RefCell<Bus<Vec::<u8>>>>) -> Closure<dyn FnMut(MessageEvent) + 'static> {
+fn onmessage(
+    bus_buffer: Rc<RefCell<Bus<Vec::<u8>>>>,
+    bus_progress: Rc<RefCell<Bus<f64>>>
+) -> Closure<dyn FnMut(MessageEvent) + 'static> {
     let callback = Closure::wrap(Box::new(move |event: MessageEvent| {
         let data = event.data(); // JsValue
         let data: Object = data.dyn_into().unwrap();
@@ -560,15 +568,19 @@ fn onmessage(bus: Rc<RefCell<Bus<Vec::<u8>>>>) -> Closure<dyn FnMut(MessageEvent
         let buffer: Uint8Array = buffer.dyn_into().unwrap();
         let buffer: Vec::<u8> = buffer.to_vec();
 
-        //let pct = 100.0*(bytes as f64)/(buffer.len() as f64);
-        //log!("onmessage(): pct={:.2}%", pct);
+        let pct = (bytes as f64)/(buffer.len() as f64);
+        //////////////////////////////////
+        // non-blocking (i.e., no atomic.wait)
+        let mut bus_progress = bus_progress.as_ref().borrow_mut();
+        let _ = bus_progress.try_broadcast(pct);
+        //////////////////////////////////
 
         if bytes == buffer.len() {
-            log!("onmessage(): download complete");
+            log!("onmessage(): splat download complete");
             //////////////////////////////////
             // non-blocking (i.e., no atomic.wait)
-            let mut bus = bus.as_ref().borrow_mut();
-            let _ = bus.try_broadcast(buffer);
+            let mut bus_buffer = bus_buffer.as_ref().borrow_mut();
+            let _ = bus_buffer.try_broadcast(buffer);
             //////////////////////////////////
         }
     }) as Box<dyn FnMut(_)>);

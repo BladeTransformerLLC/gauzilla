@@ -55,7 +55,6 @@ Right mouse button  - Move left/right/up/down
 
 ## ToDo
 * Optimize `Scene::sort()` and `Scene::generate_texture()` (eg. parallelize using [wasm-bindgen-rayon](https://github.com/GoogleChromeLabs/wasm-bindgen-rayon))
-* Display a progress bar for file loading
 * Implement asynch progressive file loading for web hosting
 * Allow camera controls with keyboard
 * Write a WebGPU render path (cf. [splatter](https://github.com/Lichtso/splatter))
