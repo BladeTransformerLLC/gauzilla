@@ -393,6 +393,108 @@ impl Scene {
         }
     }
 
+
+    /// Sorts the splats based on their depth using 16-bit single-pass counting sort
+    pub fn sort2(scene: &Self, view_proj: &[f32], bus: &mut Bus<Vec<u32>>, n_threads: usize) {
+        if scene.buffer.is_empty() {
+            return;
+        }
+        let f_buffer: &[f32] = transmute_slice::<_, f32>(scene.buffer.as_slice());
+
+        {
+            let mut mutex = scene.prev_vp.lock().unwrap();
+            if (*mutex).is_empty() {
+                (*mutex).push(view_proj[2]);
+                (*mutex).push(view_proj[6]);
+                (*mutex).push(view_proj[10]);
+            } else {
+                let dot =
+                    (*mutex)[0]*view_proj[2] +
+                    (*mutex)[1]*view_proj[6] +
+                    (*mutex)[2]*view_proj[10];
+                if (dot - 1.0).abs() < 0.01 {
+                    return;
+                }
+            }
+        }
+
+        // calculates the depth for each splat based on the view projection matrix
+        // and updates sizeList with the calculated depths.
+        let mut max_depth = i32::MIN;
+        let mut min_depth = i32::MAX;
+        /*
+        let mut size_list = vec![0_i32; scene.splat_count];
+        for i in 0..scene.splat_count {
+            let index_f = 8*i as usize;
+            let depth = (
+                (
+                    view_proj[2] * f_buffer[index_f + 0] +
+                    view_proj[6] * f_buffer[index_f + 1] +
+                    view_proj[10] * f_buffer[index_f + 2]
+                ) * 4096.0
+            ) as i32;
+            size_list[i] = depth;
+            if depth > max_depth { max_depth = depth; }
+            if depth < min_depth { min_depth = depth; }
+        }
+        */
+        let size_list: Vec<i32> = (0..scene.splat_count)
+            .map(|i| {
+                let index_f = 8*i as usize;
+                let depth = (
+                    (
+                        view_proj[2] * f_buffer[index_f + 0] +
+                        view_proj[6] * f_buffer[index_f + 1] +
+                        view_proj[10] * f_buffer[index_f + 2]
+                    ) * 4096.0
+                ) as i32;
+                if depth > max_depth { max_depth = depth; }
+                if depth < min_depth { min_depth = depth; }
+                depth
+            })
+            .collect();
+        let mut size_list = size_list;
+        //log!("Scene::sort(): max_depth={:?}, min_depth={:?}", max_depth, min_depth);
+
+        let size16: usize = 256*256; // 65,536
+        let depth_inv = size16 as f32 / (max_depth - min_depth) as f32;
+
+        let mut counts0 = vec![0_u32; size16];
+        // count the occurrences of each depth
+        for i in 0..scene.splat_count {
+            let depth = ((size_list[i] - min_depth) as f32 * depth_inv).floor() as i32;
+            let depth = depth.clamp(0, size16 as i32 - 1);
+            size_list[i] = depth;
+            counts0[depth as usize] += 1;
+        }
+        let mut starts0 = vec![0_u32; size16];
+        // store the cumulative count of elements
+        for i in 1..size16 {
+            starts0[i] = starts0[i-1] + counts0[i-1];
+        }
+
+        let mut depth_index = vec![0_u32; scene.splat_count];
+        for i in 0..scene.splat_count {
+            let depth = size_list[i] as usize;
+            let j = starts0[depth] as usize;
+            depth_index[j] = i as u32;
+            starts0[depth] += 1;
+        }
+        depth_index.reverse();// FIXME
+
+        //////////////////////////////////
+        // no cloning is happening for the single-consumer case
+        let _ = bus.try_broadcast(depth_index);
+        //////////////////////////////////
+
+        {
+            let mut mutex = scene.prev_vp.lock().unwrap();
+            (*mutex)[0] = view_proj[2];
+            (*mutex)[1] = view_proj[6];
+            (*mutex)[2] = view_proj[10];
+        }
+    }
+
 }
 
 
@@ -587,3 +689,56 @@ fn onmessage(
 
     callback
 }
+
+
+/*
+fn onmessage2(
+    bus_buffer: Rc<RefCell<Bus<Vec::<u8>>>>,
+    bus_progress: Rc<RefCell<Bus<f64>>>
+) -> Closure<dyn FnMut(MessageEvent) + 'static> {
+    let callback = Closure::wrap(Box::new(move |event: MessageEvent| {
+        let data = event.data(); // JsValue
+        let data: Object = data.dyn_into().unwrap();
+
+        // content length
+        let cl = js_sys::Reflect::get(&data, &JsValue::from_str("conlen")).unwrap();
+        let cl: Number = cl.dyn_into().unwrap();
+        let cl = cl.value_of() as usize;
+
+        // bytes downloaded
+        let bytes = js_sys::Reflect::get(&data, &JsValue::from_str("bytes")).unwrap();
+        let bytes: Number = bytes.dyn_into().unwrap();
+        let bytes = bytes.value_of() as usize;
+
+        // chunk
+        let chunk = js_sys::Reflect::get(&data, &JsValue::from_str("chunk")).unwrap();
+        let chunk: Uint8Array = chunk.dyn_into().unwrap();
+        let chunk: Vec::<u8> = chunk.to_vec();
+        //////////////////////////////////
+        // non-blocking (i.e., no atomic.wait)
+        let mut bus_buffer = bus_buffer.as_ref().borrow_mut();
+        let _ = bus_buffer.try_broadcast(chunk);
+        //////////////////////////////////
+
+        let pct = (bytes as f64)/(cl as f64);
+        //////////////////////////////////
+        // non-blocking (i.e., no atomic.wait)
+        let mut bus_progress = bus_progress.as_ref().borrow_mut();
+        let _ = bus_progress.try_broadcast(pct);
+        //////////////////////////////////
+
+        if bytes == cl {
+            log!("onmessage(): splat download complete");
+
+            for _ in 0..10 {
+                //////////////////////////////////
+                // non-blocking (i.e., no atomic.wait)
+                let _ = bus_progress.try_broadcast(1.0);
+                //////////////////////////////////
+            }
+        }
+    }) as Box<dyn FnMut(_)>);
+
+    callback
+}
+*/

@@ -134,10 +134,6 @@ fn launch_sorter_thread(
                     view_proj[3][0], view_proj[3][1], view_proj[3][2], view_proj[3][3]
                 ];
                 let start =  get_time_milliseconds();
-                /*
-                Reloading the page with Ctrl+F5 after finishing loading a ply/splat file
-                increases the sort performance by ~100% (thanks to cache?)
-                */
                 Scene::sort(&scene, view_proj_slice, &mut bus_depth, cpu_cores);
                 let sort_time = get_time_milliseconds() - start;
                 //////////////////////////////////
@@ -150,6 +146,51 @@ fn launch_sorter_thread(
 
     thread_handle
 }
+
+
+/*
+#[allow(unused_mut)]
+fn launch_sorter_thread2(
+    mut rx_buffer: BusReader<Vec<u8>>,
+    mut rx_vp: BusReader<Mat4>,
+    mut bus_depth: Bus<Vec<u32>>,
+    cpu_cores: usize,
+    mut bus_time: Bus<f64>,
+) -> thread::JoinHandle<()> {
+    // launch another thread for view-dependent splat sorting
+    let thread_handle = thread::spawn({
+        let mut scene = Scene::new();
+
+        move || loop {
+            // receive splat chunk from async JS worker callback
+            #[cfg(feature = "async_splat_stream")]
+            if let Ok(chunk) = rx_buffer.try_recv() {
+                scene.buffer.extend(chunk);
+                scene.splat_count = scene.buffer.len() / 32; // 32bytes per splat
+            }
+
+            // receive view proj matrix from main thread
+            if let Ok(view_proj) = rx_vp.try_recv() {
+                let view_proj_slice = &[
+                    view_proj[0][0], view_proj[0][1], view_proj[0][2], view_proj[0][3],
+                    view_proj[1][0], view_proj[1][1], view_proj[1][2], view_proj[1][3],
+                    view_proj[2][0], view_proj[2][1], view_proj[2][2], view_proj[2][3],
+                    view_proj[3][0], view_proj[3][1], view_proj[3][2], view_proj[3][3]
+                ];
+                let start =  get_time_milliseconds();
+                Scene::sort2(&scene, view_proj_slice, &mut bus_depth, cpu_cores);
+                let sort_time = get_time_milliseconds() - start;
+                //////////////////////////////////
+                // non-blocking (i.e., no atomic.wait)
+                let _ = bus_time.try_broadcast(sort_time);
+                //////////////////////////////////
+            }
+        }
+    });
+
+    thread_handle
+}
+*/
 
 
 #[allow(unused_mut)]
@@ -197,13 +238,14 @@ pub async fn main() {
     let bus_buffer_rc =  Rc::new(RefCell::new(bus_buffer));
 
     // lock-free bus for scene buffer (single-send, single-consumer)
-    let mut bus_progress = Bus::<f64>::new(1);
+    let mut bus_progress = Bus::<f64>::new(10);
     let mut rx_progress = bus_progress.add_rx();
     let bus_progress_rc =  Rc::new(RefCell::new(bus_progress));
 
     #[cfg(feature = "async_splat_stream")]
     let worker_handle = stream_splat_in_worker(bus_buffer_rc, bus_progress_rc);
     #[cfg(feature = "async_splat_stream")]
+    //let mut scene = Scene::new();
     let mut scene = Arc::new(Scene::new());
     #[cfg(not(feature = "async_splat_stream"))]
     let scene = Arc::new(load_scene().await);
@@ -410,6 +452,7 @@ pub async fn main() {
     let mut sort_time_ma = IncrementalMA::new(100);
     let mut send_view_proj: bool = true;
     let mut progress = 0_f64;
+    let mut s_temp = Scene::new();
 
     #[cfg(not(feature = "async_splat_stream"))]
     let done_streaming = true;
@@ -427,47 +470,79 @@ pub async fn main() {
 
         if !error_flag.load(Ordering::Relaxed) {
             /////////////////////////////////////////////////////////////////////////////////////
-            // receive splat binary buffer from async JS worker callback
-            #[cfg(feature = "async_splat_stream")]
-            if let Ok(buffer) = rx_buffer.try_recv() {
-                let mut s = Scene::new();
-                s.buffer = buffer;
-                s.splat_count = s.buffer.len() / 32; // 32bytes per splat
-                s.generate_texture();
-                scene = Arc::new(s);
-
-                unsafe {
-                    gl.bind_texture(context::TEXTURE_2D, texture);
-                    gl.tex_image_2d(
-                        context::TEXTURE_2D,
-                        0,
-                        context::RGBA32UI as i32,
-                        scene.tex_width as i32,
-                        scene.tex_height as i32,
-                        0,
-                        context::RGBA_INTEGER,
-                        context::UNSIGNED_INT,
-                        Some(transmute_slice::<_, u8>(scene.tex_data.as_slice()))
-                    );
-                }
-
-                // no longer need to receive buffer
-                worker_handle.terminate();
-
-                send_view_proj = true;
-                done_streaming = true;
-            }
-
-            // receive progress from async JS worker callback
-            #[cfg(feature = "async_splat_stream")]
-            if let Ok(pct) = rx_progress.try_recv() {
-                progress = pct;
-            }
-
             // receive sort_time from the second thread
             if let Ok(f) = rx_time.try_recv() {
                 sort_time = sort_time_ma.add(f);
             }
+
+            #[cfg(feature = "async_splat_stream")]
+            if !done_streaming {
+                // receive progress from async JS worker callback
+                if let Ok(pct) = rx_progress.try_recv() {
+                    progress = pct;
+                }
+
+                // receive splat binary buffer from async JS worker callback
+                if let Ok(buffer) = rx_buffer.try_recv() {
+                    let mut s = Scene::new();
+                    s.buffer = buffer;
+                    s.splat_count = s.buffer.len() / 32; // 32bytes per splat
+                    s.generate_texture();
+                    scene = Arc::new(s);
+
+                    unsafe {
+                        gl.bind_texture(context::TEXTURE_2D, texture);
+                        gl.tex_image_2d(
+                            context::TEXTURE_2D,
+                            0,
+                            context::RGBA32UI as i32,
+                            scene.tex_width as i32,
+                            scene.tex_height as i32,
+                            0,
+                            context::RGBA_INTEGER,
+                            context::UNSIGNED_INT,
+                            Some(transmute_slice::<_, u8>(scene.tex_data.as_slice()))
+                        );
+                    }
+
+                    done_streaming = true;
+                    send_view_proj = true;
+                }
+
+                /*
+                // receive splat chunk from async JS worker callback
+                if let Ok(chunk) = rx_buffer.try_recv() {
+                    scene.buffer.extend(chunk);
+                    scene.splat_count = scene.buffer.len() / 32; // 32bytes per splat
+                }
+                // FIXME
+                log!("main(): progress={}", progress);
+                if progress >= 1.0 {
+                    log!("main(): done streaming");
+                    worker_handle.terminate(); // no longer need to receive buffer
+
+                    scene.generate_texture();
+                    unsafe {
+                        gl.bind_texture(context::TEXTURE_2D, texture);
+                        gl.tex_image_2d(
+                            context::TEXTURE_2D,
+                            0,
+                            context::RGBA32UI as i32,
+                            scene.tex_width as i32,
+                            scene.tex_height as i32,
+                            0,
+                            context::RGBA_INTEGER,
+                            context::UNSIGNED_INT,
+                            Some(transmute_slice::<_, u8>(scene.tex_data.as_slice()))
+                        );
+                    }
+
+                    done_streaming = true;
+                    send_view_proj = true;
+                }
+                */
+            }
+
             /////////////////////////////////////////////////////////////////////////////////////
 
             camera.set_viewport(frame_input.viewport);

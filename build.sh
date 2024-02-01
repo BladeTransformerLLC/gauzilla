@@ -2,4 +2,9 @@
 
 wasm-pack build --release --target web
 
-sfz -r --coi
+for arg in "$@"
+do
+  if [ "$arg" = "sfz" ]; then
+    sfz -r --coi
+  fi
+done
