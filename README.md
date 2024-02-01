@@ -3,7 +3,7 @@ A 3D Gaussian Splatting (3DGS) renderer written in Rust for platform-agnostic We
 * Uses WebGL and CPU splat sorting (based on [splat](https://github.com/antimatter15/splat)) for high compatibility among web browsers
 * Circumvents [WASM's limitations in multithreading](https://rustwasm.github.io/2018/10/24/multithreading-rust-and-wasm.html) via the use of the lock-free [bus](https://github.com/jonhoo/bus) mechanism
 * Uses [rfd](https://github.com/PolyMeilex/rfd) to securely load a .ply or .splat file stored locally on the host machine
-* Loads a .splat file asynchronously and progressively from a URL (CDN) without having to use async code in Rust
+* Loads a .splat file asynchronously from a URL (CDN) without having to use async code in Rust
 
 
 ![Screenshot #1](images/gauzilla_01.png?raw=true "Screenshot #1")
@@ -60,12 +60,12 @@ Right mouse button  - Move left/right/up/down
 ## How to Deploy on Web
 1. (Optional) Enable `async_splat_stream` feature in Cargo.toml
 2. Run `./build.sh`
-3. Enable cross-origin isolation on the server (cf. [Vercel deployment example](https://github.com/BladeTransformerLLC/gauzilla_vercel/blob/main/vercel.json))
+3. Enable [cross-origin isolation](https://developer.chrome.com/blog/enabling-shared-array-buffer/) on the server (cf. [Vercel deployment configuration](https://github.com/BladeTransformerLLC/gauzilla_vercel/blob/main/vercel.json))
 
 
 ## ToDo
 * Optimize `Scene::sort()` and `Scene::generate_texture()` (eg. parallelize using [wasm-bindgen-rayon](https://github.com/GoogleChromeLabs/wasm-bindgen-rayon))
-* Implement asynch progressive file loading for web hosting
+* Implement asynch progressive splat loading/rendering for web hosting
 * Allow camera controls with keyboard
 * Write a WebGPU render path (cf. [splatter](https://github.com/Lichtso/splatter))
 
