@@ -24,8 +24,7 @@ extern "C" {
     pub fn get_time_milliseconds() -> f64;
     pub fn get_webgl1_version() -> String;
     pub fn get_webgl2_version() -> String;
-    pub fn float2half(x: f32) -> u32;
-    pub fn pack_half_2x16_js(x: f32, y: f32) -> u32;
+    pub fn get_url_param() -> String;
 }
 
 

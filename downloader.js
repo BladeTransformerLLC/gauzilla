@@ -1,7 +1,7 @@
-async function download_splat() {
+async function download_splat(url_param) {
     const url = new URL(
-        "train.splat",
-        "https://huggingface.co/cakewalk/splat-data/resolve/main/",
+        url_param,
+        "https://huggingface.co/datasets/satyoshi/gauzilla-data/resolve/main/",
     );
 
     const req = await fetch(url, {
@@ -68,9 +68,14 @@ async function download_splat2() {
         });
     }
 }
+
+(async () => {
+    await download_splat2();
+})();
 */
 
 
-(async () => {
-    await download_splat();
-})();
+self.onmessage = async function(event) {
+    console.log("downloader.js: Received message from Rust:", event.data);
+    download_splat(event.data);
+};

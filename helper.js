@@ -32,3 +32,13 @@ export function get_webgl2_version() {
     const gl = document.createElement("canvas").getContext("webgl2");
     return gl.getParameter(gl.VERSION);
 }
+
+
+export function get_url_param() {
+    const params = new URLSearchParams(location.search);
+    if (params.has("url")) {
+        return params.get("url");
+    } else {
+        return "";
+    }
+}

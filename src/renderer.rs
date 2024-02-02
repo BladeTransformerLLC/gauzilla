@@ -242,8 +242,14 @@ pub async fn main() {
     let mut rx_progress = bus_progress.add_rx();
     let bus_progress_rc =  Rc::new(RefCell::new(bus_progress));
 
+    let mut url = get_url_param();
+    if url.is_empty() {
+        url = "book_store.splat".to_string();
+    }
+    log!("main(): url={}", url);
+
     #[cfg(feature = "async_splat_stream")]
-    let worker_handle = stream_splat_in_worker(bus_buffer_rc, bus_progress_rc);
+    let worker_handle = stream_splat_in_worker(bus_buffer_rc, bus_progress_rc, url);
     #[cfg(feature = "async_splat_stream")]
     //let mut scene = Scene::new();
     let mut scene = Arc::new(Scene::new());

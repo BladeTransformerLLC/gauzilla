@@ -639,12 +639,17 @@ use js_sys::Number;
 /// Sends downloaded bytes to the main thread via a [Bus]
 pub fn stream_splat_in_worker(
     bus_buffer: Rc<RefCell<Bus<Vec::<u8>>>>,
-    bus_progress: Rc<RefCell<Bus<f64>>>
+    bus_progress: Rc<RefCell<Bus<f64>>>,
+    url: String
 ) -> Worker {
-    let callback_handle = onmessage(bus_buffer, bus_progress);
-
     let worker_handle = Worker::new("/downloader.js").unwrap();
+
+    let callback_handle = onmessage(bus_buffer, bus_progress);
     worker_handle.set_onmessage(Some(callback_handle.as_ref().unchecked_ref()));
+
+    let url_param = JsValue::from_str(url.as_str());
+    worker_handle.post_message(&url_param)
+        .expect("stream_splat_in_worker(): ERROR: Failed to post message to worker.");
 
     callback_handle.forget(); // avoid being dropped prematurely
 
