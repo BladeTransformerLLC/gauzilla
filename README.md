@@ -12,7 +12,7 @@ A 3D Gaussian Splatting (3DGS) renderer written in Rust for platform-agnostic We
 
 
 ## Web Demo
-https://gauzilla.vercel.app
+See the [Gauzilla Web Examples](https://github.com/BladeTransformerLLC/gauzilla/tree/main/examples) in this repository.
 
 
 ## Introduction
