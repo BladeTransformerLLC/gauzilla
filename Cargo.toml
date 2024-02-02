@@ -13,7 +13,7 @@ crate-type = ["cdylib"]
 [features]
 default = [
   "console_error_panic_hook",
-  "async_splat_stream",
+  #"async_splat_stream",
 ]
 async_splat_stream = []
 
