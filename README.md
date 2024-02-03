@@ -8,7 +8,7 @@ A 3D Gaussian Splatting (3DGS) renderer written in Rust for platform-agnostic We
 
 ![Screenshot #1](images/gauzilla_01.png?raw=true "Screenshot #1")
 
-![Screenshot #2](images/gauzilla_02.png?raw=true "Screenshot #2")
+https://github.com/BladeTransformerLLC/gauzilla/assets/76802410/7221c93d-34ff-4c3f-8c75-b5cdeb83966b
 
 
 ## Web Demo
