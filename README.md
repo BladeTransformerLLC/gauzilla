@@ -60,7 +60,7 @@ Right mouse button  - Move left/right/up/down
 ## How to Deploy on Web
 1. (Optional) Enable `async_splat_stream` feature in Cargo.toml
 2. Run `./build.sh`
-3. Enable [cross-origin isolation](https://developer.chrome.com/blog/enabling-shared-array-buffer/) on the server (cf. [Vercel deployment configuration](https://github.com/BladeTransformerLLC/gauzilla_vercel/blob/main/vercel.json))
+3. Enable [cross-origin isolation](https://developer.chrome.com/blog/enabling-shared-array-buffer/) on the server (cf. [Vercel deployment configuration](https://github.com/BladeTransformerLLC/gauzilla_vercel/blob/main/vercel.json) or [coi-serviceworker](https://github.com/gzuidhof/coi-serviceworker))
 
 
 ## ToDo
