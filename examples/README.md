@@ -2,6 +2,11 @@
 A list of 3D Gaussian Splatting (3DGS) low-res examples using Gauzilla. All the .splat files are [distributed on Hugging Face](https://huggingface.co/datasets/satyoshi/gauzilla-data) under the CC BY-NC license.
 
 
+## Taksim Square
+![Taksim Square](../images/taksim_square.png?raw=true "Taksim Square")
+https://gauzilla.vercel.app?url=taksim_square.splat
+
+
 ## Book Store
 ![Book Store](../images/book_store.png?raw=true "Book Store")
 https://gauzilla.vercel.app?url=book_store.splat
