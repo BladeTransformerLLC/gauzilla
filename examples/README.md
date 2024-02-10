@@ -17,6 +17,11 @@ https://gauzilla.vercel.app?url=anime_figures02.splat
 https://gauzilla.vercel.app?url=taksim_square.splat
 
 
+## Stairs
+![Stairs](../images/stairs.png?raw=true "Stairs")
+https://gauzilla.vercel.app?url=stairs.splat
+
+
 ## Book Store
 ![Book Store](../images/book_store.png?raw=true "Book Store")
 https://gauzilla.vercel.app?url=book_store.splat
