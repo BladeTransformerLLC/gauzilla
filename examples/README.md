@@ -8,8 +8,8 @@ https://gauzilla.vercel.app?url=cat.splat
 
 
 ## Anime Figures
-![Anime Figures](../images/anime_figures.png?raw=true "Anime Figures")
-https://gauzilla.vercel.app?url=anime_figures.splat
+![Anime Figures](../images/anime_figures02.png?raw=true "Anime Figures")
+https://gauzilla.vercel.app?url=anime_figures02.splat
 
 
 ## Istanbul
