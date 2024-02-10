@@ -22,6 +22,11 @@ https://gauzilla.vercel.app?url=taksim_square.splat
 https://gauzilla.vercel.app?url=book_store.splat
 
 
+## Book Store 2
+![Book Store 2](../images/book_store02.png?raw=true "Book Store 2")
+https://gauzilla.vercel.app?url=book_store02.splat
+
+
 ## Shoe Store
 ![Shoe Store](../images/shoe_store.png?raw=true "Shoe Store")
 https://gauzilla.vercel.app?url=shoe_store.splat
