@@ -17,6 +17,11 @@ https://gauzilla.vercel.app?url=anime_figures02.splat
 https://gauzilla.vercel.app?url=submarine.splat
 
 
+## Steam Engine
+![Steam Engine](../images/steam_engine.png?raw=true "Steam Engine")
+https://gauzilla.vercel.app?url=steam_engine.splat
+
+
 ## Stairs
 ![Stairs](../images/stairs.png?raw=true "Stairs")
 https://gauzilla.vercel.app?url=stairs.splat
