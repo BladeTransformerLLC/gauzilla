@@ -193,6 +193,452 @@ fn launch_sorter_thread2(
 */
 
 
+fn create_glsl_program(
+    gl: &Context,
+    vs_file: &str,
+    fs_file: &str,
+    error_flag: &Arc<AtomicBool>,
+    error_msg: &Arc<Mutex<String>>
+) -> context::Program {
+    unsafe {
+        let vert_shader = gl.create_shader(context::VERTEX_SHADER)
+            .expect("Failed creating vertex shader");
+        let frag_shader = gl.create_shader(context::FRAGMENT_SHADER)
+            .expect("Failed creating fragment shader");
+
+        gl.shader_source(vert_shader, vs_file);
+        gl.shader_source(frag_shader, fs_file);
+        gl.compile_shader(vert_shader);
+        gl.compile_shader(frag_shader);
+
+        let id = gl.create_program()
+            .expect("Failed creating program");
+
+        gl.attach_shader(id, vert_shader);
+        gl.attach_shader(id, frag_shader);
+        gl.link_program(id);
+
+        if !gl.get_program_link_status(id) {
+            let log = gl.get_shader_info_log(vert_shader);
+            if !log.is_empty() {
+                set_error_for_egui(
+                    error_flag, error_msg,
+                    format!("ERROR: gl.get_program_link_status(): {}", log)
+                );
+            }
+            let log = gl.get_shader_info_log(frag_shader);
+            if !log.is_empty() {
+                set_error_for_egui(
+                    error_flag, error_msg,
+                    format!("ERROR: gl.get_program_link_status(): {}", log)
+                );
+            }
+            let log = gl.get_program_info_log(id);
+            if !log.is_empty() {
+                set_error_for_egui(
+                    error_flag, error_msg,
+                    format!("ERROR: gl.get_program_link_status(): {}", log)
+                );
+            }
+            //unreachable!();
+        } else {
+            gl.detach_shader(id, vert_shader);
+            gl.detach_shader(id, frag_shader);
+            gl.delete_shader(vert_shader);
+            gl.delete_shader(frag_shader);
+        }
+
+        return id;
+    }
+}
+
+
+struct SplatGLSL {
+    program: Option<context::Program>,
+    u_projection: Option<context::UniformLocation>,
+    u_viewport: Option<context::UniformLocation>,
+    u_focal: Option<context::UniformLocation>,
+    u_htan_fov: Option<context::UniformLocation>,
+    u_view: Option<context::UniformLocation>,
+    u_cam_pos: Option<context::UniformLocation>,
+    u_splat_scale: Option<context::UniformLocation>,
+
+    vertex_buffer: Option<context::WebBufferKey>,
+    a_position: u32,
+
+    texture: Option<context::WebTextureKey>,
+    u_splat_texture: Option<context::UniformLocation>,
+
+    index_buffer: Option<context::WebBufferKey>,
+    a_index: u32,
+}
+impl SplatGLSL {
+    const VERT_SHADER: &'static str = include_str!("gsplat.vert");
+    const FRAG_SHADER: &'static str = include_str!("gsplat.frag");
+
+
+    pub fn new() -> Self {
+        Self {
+            program: None,
+            u_projection: None,
+            u_viewport: None,
+            u_focal: None,
+            u_htan_fov: None,
+            u_view: None,
+            u_cam_pos: None,
+            u_splat_scale: None,
+
+            vertex_buffer: None,
+            a_position: 0,
+
+            texture: None,
+            u_splat_texture: None,
+
+            index_buffer: None,
+            a_index: 0,
+        }
+    }
+
+
+    pub fn init(
+        &mut self,
+        gl: &Context,
+        error_flag: &Arc<AtomicBool>,
+        error_msg: &Arc<Mutex<String>>,
+        scene: &Arc<Scene>
+    ) {
+        let gsplat_program_id = create_glsl_program(
+            gl,
+            Self::VERT_SHADER,
+            Self::FRAG_SHADER,
+            error_flag,
+            error_msg
+        );
+        self.program = Some(gsplat_program_id);
+        log!("SplatGLSL::init(): self.program={:?}", self.program);
+
+        unsafe {
+            gl.use_program(self.program);
+            {
+                self.u_projection = gl.get_uniform_location(gsplat_program_id, "projection");
+                log!("SplatGLSL::init(): self.u_projection={:?}", self.u_projection);
+                self.u_viewport = gl.get_uniform_location(gsplat_program_id, "viewport");
+                log!("SplatGLSL::init(): self.u_viewport={:?}", self.u_viewport);
+                self.u_focal = gl.get_uniform_location(gsplat_program_id, "focal");
+                log!("SplatGLSL::init(): self.u_focal={:?}", self.u_focal);
+                self.u_view = gl.get_uniform_location(gsplat_program_id, "view");
+                log!("SplatGLSL::init(): self.u_view={:?}", self.u_view);
+                self.u_htan_fov = gl.get_uniform_location(gsplat_program_id, "htan_fov");
+                log!("SplatGLSL::init(): self.u_htan_fov={:?}", self.u_htan_fov);
+                self.u_cam_pos = gl.get_uniform_location(gsplat_program_id, "cam_pos");
+                log!("SplatGLSL::init(): self.u_cam_pos={:?}", self.u_cam_pos);
+                self.u_splat_scale = gl.get_uniform_location(gsplat_program_id, "splat_scale");
+                log!("SplatGLSL::init(): self.u_splat_scale={:?}", self.u_splat_scale);
+
+                let triangle_vertices = &mut [ // quad
+                    -1_f32, -1.0,
+                    1.0, -1.0,
+                    1.0, 1.0,
+                    -1.0, 1.0,
+                ];
+                triangle_vertices.iter_mut().for_each(|v| *v *= 2.0);
+                self.vertex_buffer = Some(gl.create_buffer().unwrap());
+                log!("SplatGLSL::init(): self.vertex_buffer={:?}", self.vertex_buffer);
+                gl.bind_buffer(context::ARRAY_BUFFER, self.vertex_buffer);
+                gl.buffer_data_u8_slice(context::ARRAY_BUFFER, transmute_slice::<_, u8>(triangle_vertices), context::STATIC_DRAW);
+                self.a_position = gl.get_attrib_location(gsplat_program_id, "position").unwrap();
+                log!("SplatGLSL::init(): self.a_position={:?}", self.a_position);
+                gl.enable_vertex_attrib_array(self.a_position);
+                gl.bind_buffer(context::ARRAY_BUFFER, self.vertex_buffer);
+                gl.vertex_attrib_pointer_f32(self.a_position, 2, context::FLOAT, false, 0, 0);
+
+                self.texture = Some(gl.create_texture().unwrap());
+                log!("SplatGLSL::init(): self.texture={:?}", self.texture); // WebTextureKey(1v1)
+                gl.bind_texture(context::TEXTURE_2D, self.texture);
+                self.u_splat_texture = gl.get_uniform_location(gsplat_program_id, "u_splat_texture");
+                log!("SplatGLSL::init(): self.u_splat_texture={:?}", self.u_splat_texture);
+                gl.uniform_1_i32(self.u_splat_texture.as_ref(), 0); // associate the active texture unit with the uniform
+
+                // index buffer for instanced rendering
+                self.index_buffer = Some(gl.create_buffer().unwrap());
+                log!("SplatGLSL::init(): self.index_buffer={:?}", self.index_buffer);
+                //gl.bind_buffer(context::ARRAY_BUFFER, self.index_buffer);
+                self.a_index = gl.get_attrib_location(gsplat_program_id, "index").unwrap();
+                log!("SplatGLSL::init(): self.a_index={:?}", self.a_index);
+                gl.enable_vertex_attrib_array(self.a_index);
+                gl.bind_buffer(context::ARRAY_BUFFER, self.index_buffer);
+                gl.vertex_attrib_pointer_i32(self.a_index, 1, context::INT, 0, 0);
+                gl.vertex_attrib_divisor(self.a_index, 1);
+            }
+            gl.use_program(None);
+
+            gl.bind_texture(context::TEXTURE_2D, self.texture);
+            gl.tex_parameter_i32(context::TEXTURE_2D, context::TEXTURE_WRAP_S, context::CLAMP_TO_EDGE as i32);
+            gl.tex_parameter_i32(context::TEXTURE_2D, context::TEXTURE_WRAP_T, context::CLAMP_TO_EDGE as i32);
+            gl.tex_parameter_i32(context::TEXTURE_2D, context::TEXTURE_MIN_FILTER, context::NEAREST as i32);
+            gl.tex_parameter_i32(context::TEXTURE_2D, context::TEXTURE_MAG_FILTER, context::NEAREST as i32);
+
+            #[cfg(not(feature = "async_splat_stream"))]
+            gl.tex_image_2d(
+                context::TEXTURE_2D,
+                0,
+                context::RGBA32UI as i32,
+                scene.tex_width as i32,
+                scene.tex_height as i32,
+                0,
+                context::RGBA_INTEGER,
+                context::UNSIGNED_INT,
+                Some(transmute_slice::<_, u8>(scene.tex_data.as_slice()))
+            );
+
+            //gl.active_texture(context::TEXTURE0);
+            //gl.bind_texture(context::TEXTURE_2D, self.texture);
+
+            gl.bind_buffer(context::ARRAY_BUFFER, None);
+            gl.bind_texture(context::TEXTURE_2D, None);
+        }
+    }
+
+
+    pub fn render(
+        &self,
+        gl: &Context,
+        projection_slice: &[f32],
+        view_slice: &[f32],
+        focal: &[f32],
+        viewport: &[f32],
+        htan_fov: &[f32],
+        cam_pos: &[f32],
+        splat_scale: f32,
+        rx_depth: &mut BusReader<Vec<u32>>,
+        splat_count: i32
+    ) {
+        unsafe {
+            gl.use_program(self.program);
+            {
+                gl.disable(context::DEPTH_TEST);
+                gl.disable(context::CULL_FACE);
+                //gl.cull_face(context::FRONT);
+
+                // FIXME
+                gl.enable(context::BLEND);
+                /*
+                gl.clear_color(0.0, 0.0, 0.0, 1.0);
+                gl.blend_func(context::SRC_ALPHA, context::ONE_MINUS_SRC_ALPHA);
+                //gl.blend_func(context::ONE_MINUS_SRC_ALPHA, context::SRC_ALPHA);
+                */
+                /*
+                //gl.clear_color(0.0, 0.0, 0.0, 0.0);
+                gl.blend_func_separate(
+                    context::ONE_MINUS_DST_ALPHA,
+                    context::ONE,
+                    context::ONE_MINUS_DST_ALPHA,
+                    context::ONE,
+                );
+                gl.blend_equation_separate(context::FUNC_ADD, context::FUNC_ADD);
+                */
+
+                gl.uniform_matrix_4_f32_slice(self.u_projection.as_ref(), false, projection_slice);
+                gl.uniform_matrix_4_f32_slice(self.u_view.as_ref(), false, view_slice);
+                gl.uniform_1_i32(self.u_splat_texture.as_ref(), 0); // associate the active texture unit with the uniform
+                gl.uniform_2_f32_slice(self.u_focal.as_ref(), focal);
+                gl.uniform_2_f32_slice(self.u_viewport.as_ref(), viewport);
+                gl.uniform_2_f32_slice(self.u_htan_fov.as_ref(), htan_fov);
+                gl.uniform_3_f32_slice(self.u_cam_pos.as_ref(), cam_pos);
+                gl.uniform_1_f32(self.u_splat_scale.as_ref(), splat_scale);
+
+                gl.active_texture(context::TEXTURE0);
+                gl.bind_texture(context::TEXTURE_2D, self.texture);
+
+                gl.enable_vertex_attrib_array(self.a_position);
+                gl.bind_buffer(context::ARRAY_BUFFER, self.vertex_buffer);
+                gl.vertex_attrib_pointer_f32(self.a_position, 2, context::FLOAT, false, 0, 0);
+
+                gl.enable_vertex_attrib_array(self.a_index);
+                gl.bind_buffer(context::ARRAY_BUFFER, self.index_buffer);
+                //////////////////////////////////
+                // non-blocking (i.e., no atomic.wait)
+                if let Ok(depth_index) = rx_depth.try_recv() {
+                    gl.buffer_data_u8_slice(
+                        context::ARRAY_BUFFER,
+                        transmute_slice::<_, u8>(depth_index.as_slice()),
+                        context::DYNAMIC_DRAW
+                    );
+                }
+                //////////////////////////////////
+                gl.vertex_attrib_pointer_i32(self.a_index, 1, context::INT, 0, 0);
+                gl.vertex_attrib_divisor(self.a_index, 1);
+
+                gl.draw_arrays_instanced(
+                    context::TRIANGLE_FAN,
+                    0,
+                    4,
+                    splat_count
+                );
+            }
+            gl.use_program(None);
+            gl.bind_buffer(context::ARRAY_BUFFER, None);
+            gl.bind_texture(context::TEXTURE_2D, None);
+        }
+    }
+}
+
+
+struct QuadGLSL {
+    // render to texture
+    pub(crate) framebuffer: Option<context::Framebuffer>,
+    texture: Option<context::WebTextureKey>,
+
+    // textured quad
+    program: Option<context::Program>,
+    vao: Option<context::VertexArray>,
+    vbo: Option<context::WebBufferKey>,
+    a_position: u32,
+    u_screen_texture: Option<context::UniformLocation>,
+}
+impl QuadGLSL {
+    const VERT_SHADER: &'static str = include_str!("quad.vert");
+    const FRAG_SHADER: &'static str = include_str!("quad.frag");
+    const VERTICES: &'static [f32; 18] = &[
+        // XYZ
+        -1.0,  1.0, 0.0,
+        -1.0, -1.0, 0.0,
+         1.0, -1.0, 0.0,
+
+        -1.0,  1.0, 0.0,
+         1.0, -1.0, 0.0,
+         1.0,  1.0, 0.0,
+    ];
+
+
+    pub fn new() -> Self {
+        Self {
+            framebuffer: None,
+            texture: None,
+
+            program: None,
+            vao: None,
+            vbo: None,
+            a_position: 0,
+            u_screen_texture: None,
+        }
+    }
+
+
+    pub fn init(
+        &mut self,
+        gl: &Context,
+        error_flag: &Arc<AtomicBool>,
+        error_msg: &Arc<Mutex<String>>,
+        width: i32,
+        height: i32
+    ) {
+        let quad_program_id = create_glsl_program(
+            gl,
+            Self::VERT_SHADER,
+            Self::FRAG_SHADER,
+            error_flag,
+            error_msg
+        );
+        self.program = Some(quad_program_id);
+        log!("QuadGLSL::init(): self.program={:?}", self.program);
+
+        unsafe {
+            self.framebuffer = Some(gl.create_framebuffer().unwrap());
+            log!("QuadGLSL::init(): self.framebuffer={:?}", self.framebuffer);
+            gl.bind_framebuffer(context::FRAMEBUFFER, self.framebuffer);
+            {
+                self.texture = Some(gl.create_texture().unwrap());
+                log!("QuadGLSL::init(): self.texture={:?}", self.texture);
+                gl.bind_texture(context::TEXTURE_2D, self.texture);
+                gl.tex_image_2d(
+                    context::TEXTURE_2D,
+                    0,
+                    context::RGB as i32,
+                    width,
+                    height,
+                    0,
+                    context::RGB,
+                    context::UNSIGNED_BYTE,
+                    None
+                );
+                gl.tex_parameter_i32(context::TEXTURE_2D, context::TEXTURE_MIN_FILTER, context::LINEAR as i32);
+                gl.tex_parameter_i32(context::TEXTURE_2D, context::TEXTURE_MAG_FILTER, context::LINEAR as i32);
+
+                gl.framebuffer_texture_2d(
+                    context::FRAMEBUFFER,
+                    context::COLOR_ATTACHMENT0,
+                    context::TEXTURE_2D,
+                    self.texture,
+                    0
+                );
+
+                let status = gl.check_framebuffer_status(context::FRAMEBUFFER);
+                if status != context::FRAMEBUFFER_COMPLETE {
+                    set_error_for_egui(
+                        error_flag, error_msg,
+                        format!("ERROR: gl.check_framebuffer_status(): {}", status)
+                    );
+                }
+            }
+            gl.bind_framebuffer(context::FRAMEBUFFER, None);
+            gl.bind_texture(context::TEXTURE_2D, None);
+
+            gl.use_program(self.program);
+            {
+                self.vao = Some(gl.create_vertex_array().unwrap());
+                log!("QuadGLSL::init(): self.vao={:?}", self.vao);
+                gl.bind_vertex_array(self.vao);
+
+                self.vbo = Some(gl.create_buffer().unwrap());
+                log!("QuadGLSL::init(): self.vbo={:?}", self.vbo);
+                gl.bind_buffer(context::ARRAY_BUFFER, self.vbo);
+                gl.buffer_data_u8_slice(context::ARRAY_BUFFER, transmute_slice::<_, u8>(Self::VERTICES), context::STATIC_DRAW);
+
+                self.a_position = gl.get_attrib_location(quad_program_id, "position").unwrap();
+                log!("QuadGLSL::init(): self.a_position={:?}", self.a_position);
+                gl.enable_vertex_attrib_array(self.a_position);
+                gl.vertex_attrib_pointer_f32(
+                    self.a_position,
+                    3,
+                    context::FLOAT,
+                    false,
+                    3*std::mem::size_of::<f32>() as i32,
+                    0
+                );
+
+                self.u_screen_texture = gl.get_uniform_location(quad_program_id, "u_screen_texture");
+                log!("QuadGLSL::init(): self.u_screen_texture={:?}", self.u_screen_texture);
+                gl.uniform_1_i32(self.u_screen_texture.as_ref(), 0); // associate the active texture unit with the uniform
+            }
+            gl.use_program(None);
+            gl.bind_vertex_array(None);
+            gl.bind_buffer(context::ARRAY_BUFFER, None);
+        }
+    }
+
+
+    pub fn render(
+        &self,
+        gl: &Context,
+    ) {
+        unsafe {
+            gl.use_program(self.program);
+            {
+                gl.uniform_1_i32(self.u_screen_texture.as_ref(), 0);
+
+                gl.active_texture(context::TEXTURE0);
+                gl.bind_texture(context::TEXTURE_2D, self.texture);
+
+                gl.bind_vertex_array(self.vao);
+                gl.draw_arrays(context::TRIANGLES, 0, 6);
+            }
+            gl.use_program(None);
+        }
+    }
+}
+
+
 #[allow(unused_mut)]
 pub async fn main() {
     let error_flag = Arc::new(AtomicBool::new(false));
@@ -256,170 +702,11 @@ pub async fn main() {
     #[cfg(not(feature = "async_splat_stream"))]
     let scene = Arc::new(load_scene().await);
 
-    let mut gsplat_program: Option<context::Program> = None;
-    let mut u_projection: Option<context::UniformLocation> = None;
-    let mut u_viewport: Option<context::UniformLocation> = None;
-    let mut u_focal: Option<context::UniformLocation> = None;
-    let mut u_htan_fov: Option<context::UniformLocation> = None;
-    let mut u_view: Option<context::UniformLocation> = None;
-    let mut u_cam_pos: Option<context::UniformLocation> = None;
-    let mut u_splat_scale: Option<context::UniformLocation> = None;
+    let mut splat_glsl = SplatGLSL::new();
+    splat_glsl.init(&gl, &error_flag, &error_msg, &scene);
 
-    let mut vertex_buffer: Option<context::WebBufferKey> = None;
-    let mut a_position: u32 = 0;
-
-    let mut texture: Option<context::WebTextureKey> = None;
-    let mut u_texture: Option<context::UniformLocation> = None;
-
-    let mut index_buffer: Option<context::WebBufferKey> = None;
-    let mut a_index: u32 = 0;
-
-    unsafe {
-        let vert_shader = gl.create_shader(context::VERTEX_SHADER)
-            .expect("Failed creating vertex shader");
-        let frag_shader = gl.create_shader(context::FRAGMENT_SHADER)
-            .expect("Failed creating fragment shader");
-        /*
-        let header: &str = {
-            "#version 300 es
-                #ifdef GL_FRAGMENT_PRECISION_HIGH
-                    precision highp float;
-                    precision highp int;
-                    precision highp sampler2DArray;
-                    precision highp sampler3D;
-                #else
-                    precision mediump float;
-                    precision mediump int;
-                    precision mediump sampler2DArray;
-                    precision mediump sampler3D;
-                #endif\n"
-        };
-        */
-        let vertex_shader_source = include_str!("gsplat.vert");
-        let fragment_shader_source = include_str!("gsplat.frag");
-        //let vertex_shader_source = format!("{}{}", header, vertex_shader_source);
-        //let fragment_shader_source = format!("{}{}", header, fragment_shader_source);
-
-        gl.shader_source(vert_shader, &vertex_shader_source);
-        gl.shader_source(frag_shader, &fragment_shader_source);
-        gl.compile_shader(vert_shader);
-        gl.compile_shader(frag_shader);
-
-        let id = gl.create_program()
-            .expect("Failed creating program");
-        gsplat_program = Some(id);
-        log!("main(): gsplat_program={:?}", gsplat_program);
-
-        gl.attach_shader(id, vert_shader);
-        gl.attach_shader(id, frag_shader);
-        gl.link_program(id);
-
-        if !gl.get_program_link_status(id) {
-            let log = gl.get_shader_info_log(vert_shader);
-            if !log.is_empty() {
-                set_error_for_egui(
-                    &error_flag, &error_msg,
-                    format!("ERROR: gl.get_program_link_status(): {}", log)
-                );
-            }
-            let log = gl.get_shader_info_log(frag_shader);
-            if !log.is_empty() {
-                set_error_for_egui(
-                    &error_flag, &error_msg,
-                    format!("ERROR: gl.get_program_link_status(): {}", log)
-                );
-            }
-            let log = gl.get_program_info_log(id);
-            if !log.is_empty() {
-                set_error_for_egui(
-                    &error_flag, &error_msg,
-                    format!("ERROR: gl.get_program_link_status(): {}", log)
-                );
-            }
-            //unreachable!();
-        } else {
-            gl.detach_shader(id, vert_shader);
-            gl.detach_shader(id, frag_shader);
-            gl.delete_shader(vert_shader);
-            gl.delete_shader(frag_shader);
-
-            gl.use_program(gsplat_program);
-            {
-                u_projection = gl.get_uniform_location(id, "projection");
-                log!("main(): u_projection={:?}", u_projection);
-                u_viewport = gl.get_uniform_location(id, "viewport");
-                log!("main(): u_viewport={:?}", u_viewport);
-                u_focal = gl.get_uniform_location(id, "focal");
-                log!("main(): u_focal={:?}", u_focal);
-                u_view = gl.get_uniform_location(id, "view");
-                log!("main(): u_view={:?}", u_view);
-                u_htan_fov = gl.get_uniform_location(id, "htan_fov");
-                log!("main(): u_htan_fov={:?}", u_htan_fov);
-                u_cam_pos = gl.get_uniform_location(id, "cam_pos");
-                log!("main(): u_cam_pos={:?}", u_cam_pos);
-                u_splat_scale = gl.get_uniform_location(id, "splat_scale");
-                log!("main(): u_splat_scale={:?}", u_splat_scale);
-
-                let triangle_vertices = &mut [ // quad
-                    -1_f32, -1.0,
-                    1.0, -1.0,
-                    1.0, 1.0,
-                    -1.0, 1.0,
-                ];
-                triangle_vertices.iter_mut().for_each(|v| *v *= 2.0);
-                vertex_buffer = Some(gl.create_buffer().unwrap());
-                log!("main(): vertex_buffer={:?}", vertex_buffer);
-                gl.bind_buffer(context::ARRAY_BUFFER, vertex_buffer);
-                gl.buffer_data_u8_slice(context::ARRAY_BUFFER, transmute_slice::<_, u8>(triangle_vertices), context::STATIC_DRAW);
-                a_position = gl.get_attrib_location(id, "position").unwrap();
-                log!("main(): a_position={:?}", a_position);
-                gl.enable_vertex_attrib_array(a_position);
-                gl.bind_buffer(context::ARRAY_BUFFER, vertex_buffer);
-                gl.vertex_attrib_pointer_f32(a_position, 2, context::FLOAT, false, 0, 0);
-
-                texture = Some(gl.create_texture().unwrap());
-                log!("main(): texture={:?}", texture); // WebTextureKey(1v1)
-                gl.bind_texture(context::TEXTURE_2D, texture);
-                u_texture = gl.get_uniform_location(id, "u_texture");
-                log!("main(): u_texture={:?}", u_texture);
-                gl.uniform_1_i32(u_texture.as_ref(), 0); // associate the active texture unit with the uniform
-
-                // index buffer for instanced rendering
-                index_buffer = Some(gl.create_buffer().unwrap());
-                log!("main(): index_buffer={:?}", index_buffer);
-                //gl.bind_buffer(context::ARRAY_BUFFER, index_buffer);
-                a_index = gl.get_attrib_location(id, "index").unwrap();
-                log!("main(): a_index={:?}", a_index);
-                gl.enable_vertex_attrib_array(a_index);
-                gl.bind_buffer(context::ARRAY_BUFFER, index_buffer);
-                gl.vertex_attrib_pointer_i32(a_index, 1, context::INT, 0, 0);
-                gl.vertex_attrib_divisor(a_index, 1);
-            }
-            gl.use_program(None);
-
-            gl.bind_texture(context::TEXTURE_2D, texture);
-            gl.tex_parameter_i32(context::TEXTURE_2D, context::TEXTURE_WRAP_S, context::CLAMP_TO_EDGE as i32);
-            gl.tex_parameter_i32(context::TEXTURE_2D, context::TEXTURE_WRAP_T, context::CLAMP_TO_EDGE as i32);
-            gl.tex_parameter_i32(context::TEXTURE_2D, context::TEXTURE_MIN_FILTER, context::NEAREST as i32);
-            gl.tex_parameter_i32(context::TEXTURE_2D, context::TEXTURE_MAG_FILTER, context::NEAREST as i32);
-
-            #[cfg(not(feature = "async_splat_stream"))]
-            gl.tex_image_2d(
-                context::TEXTURE_2D,
-                0,
-                context::RGBA32UI as i32,
-                scene.tex_width as i32,
-                scene.tex_height as i32,
-                0,
-                context::RGBA_INTEGER,
-                context::UNSIGNED_INT,
-                Some(transmute_slice::<_, u8>(scene.tex_data.as_slice()))
-            );
-
-            //gl.active_texture(context::TEXTURE0);
-            //gl.bind_texture(context::TEXTURE_2D, texture);
-        }
-    }
+    let mut quad_glsl = QuadGLSL::new();
+    quad_glsl.init(&gl, &error_flag, &error_msg, canvas_w as i32, canvas_h as i32);
 
     // TODO: implement resize() for change in window size
 
@@ -497,7 +784,7 @@ pub async fn main() {
                     scene = Arc::new(s);
 
                     unsafe {
-                        gl.bind_texture(context::TEXTURE_2D, texture);
+                        gl.bind_texture(context::TEXTURE_2D, splat_glsl.texture);
                         gl.tex_image_2d(
                             context::TEXTURE_2D,
                             0,
@@ -529,7 +816,7 @@ pub async fn main() {
 
                     scene.generate_texture();
                     unsafe {
-                        gl.bind_texture(context::TEXTURE_2D, texture);
+                        gl.bind_texture(context::TEXTURE_2D, splat_texture);
                         gl.tex_image_2d(
                             context::TEXTURE_2D,
                             0,
@@ -775,72 +1062,33 @@ pub async fn main() {
             }
 
             unsafe {
-                gl.viewport(0, 0, w as i32, h as i32);
-                gl.clear(context::COLOR_BUFFER_BIT);
-
-                gl.use_program(gsplat_program);
+                // render to texture
+                gl.bind_framebuffer(context::FRAMEBUFFER, quad_glsl.framebuffer);
                 {
-                    gl.disable(context::DEPTH_TEST);
-                    gl.disable(context::CULL_FACE);
-                    //gl.cull_face(context::FRONT);
+                    gl.viewport(0, 0, w as i32, h as i32);
+                    gl.clear(context::COLOR_BUFFER_BIT);
 
-                    // FIXME
-                    gl.enable(context::BLEND);
-                    /*
-                    gl.clear_color(0.0, 0.0, 0.0, 1.0);
-                    gl.blend_func(context::SRC_ALPHA, context::ONE_MINUS_SRC_ALPHA);
-                    //gl.blend_func(context::ONE_MINUS_SRC_ALPHA, context::SRC_ALPHA);
-                    */
-                    /*
-                    //gl.clear_color(0.0, 0.0, 0.0, 0.0);
-                    gl.blend_func_separate(
-                        context::ONE_MINUS_DST_ALPHA,
-                        context::ONE,
-                        context::ONE_MINUS_DST_ALPHA,
-                        context::ONE,
-                    );
-                    gl.blend_equation_separate(context::FUNC_ADD, context::FUNC_ADD);
-                    */
-
-                    gl.uniform_matrix_4_f32_slice(u_projection.as_ref(), false, projection_slice);
-                    gl.uniform_matrix_4_f32_slice(u_view.as_ref(), false, view_slice);
-                    gl.uniform_1_i32(u_texture.as_ref(), 0); // associate the active texture unit with the uniform
-                    gl.uniform_2_f32_slice(u_focal.as_ref(), &[fx.abs(), fy.abs()]);
-                    gl.uniform_2_f32_slice(u_viewport.as_ref(), &[w, h]);
-                    gl.uniform_2_f32_slice(u_htan_fov.as_ref(), &[htanx, htany]);
-                    gl.uniform_3_f32_slice(u_cam_pos.as_ref(), &[cam_pos.x, cam_pos.y, cam_pos.z]);
-                    gl.uniform_1_f32(u_splat_scale.as_ref(), splat_scale);
-
-                    gl.active_texture(context::TEXTURE0);
-                    gl.bind_texture(context::TEXTURE_2D, texture);
-
-                    gl.enable_vertex_attrib_array(a_position);
-                    gl.bind_buffer(context::ARRAY_BUFFER, vertex_buffer);
-                    gl.vertex_attrib_pointer_f32(a_position, 2, context::FLOAT, false, 0, 0);
-
-                    gl.enable_vertex_attrib_array(a_index);
-                    gl.bind_buffer(context::ARRAY_BUFFER, index_buffer);
-                    //////////////////////////////////
-                    // non-blocking (i.e., no atomic.wait)
-                    if let Ok(depth_index) = rx_depth.try_recv() {
-                        gl.buffer_data_u8_slice(
-                            context::ARRAY_BUFFER,
-                            transmute_slice::<_, u8>(depth_index.as_slice()),
-                            context::DYNAMIC_DRAW
-                        );
-                    }
-                    //////////////////////////////////
-                    gl.vertex_attrib_pointer_i32(a_index, 1, context::INT, 0, 0);
-                    gl.vertex_attrib_divisor(a_index, 1);
-
-                    gl.draw_arrays_instanced(
-                        context::TRIANGLE_FAN,
-                        0,
-                        4,
+                    splat_glsl.render(
+                        &gl,
+                        projection_slice,
+                        view_slice,
+                        &[fx.abs(), fy.abs()],
+                        &[w, h],
+                        &[htanx, htany],
+                        &[cam_pos.x, cam_pos.y, cam_pos.z],
+                        splat_scale,
+                        &mut rx_depth,
                         scene.splat_count as i32
                     );
                 }
-                gl.use_program(None);
+                gl.bind_framebuffer(context::FRAMEBUFFER, None);
+
+                { // render the textured quad
+                    gl.viewport(0, 0, w as i32, h as i32);
+                    gl.clear(context::COLOR_BUFFER_BIT);
+
+                    quad_glsl.render(&gl);
+                }
 
                 gui.render();
                 gl.flush();

@@ -2,7 +2,7 @@
 precision highp float;
 precision highp int;
 
-uniform highp usampler2D u_texture;
+uniform highp usampler2D u_splat_texture;
 uniform mat4 projection, view;
 uniform vec2 focal;
 uniform vec2 viewport;
@@ -21,7 +21,7 @@ void main () {
     uint u = (uint(index) & 0x3ffu) << 1;
     uint v = uint(index) >> 10;
 
-    uvec3 pos = texelFetch(u_texture, ivec2(u, v), 0).rgb;
+    uvec3 pos = texelFetch(u_splat_texture, ivec2(u, v), 0).rgb;
     vec3 center = uintBitsToFloat(pos); // splat pos in world space
     vec4 cam = view * vec4(center, 1.0);
     vec4 pos2d = projection * cam;
@@ -32,7 +32,7 @@ void main () {
         return;
     }
 
-    uvec4 cov = texelFetch(u_texture, ivec2(u | 1u, v), 0);
+    uvec4 cov = texelFetch(u_splat_texture, ivec2(u | 1u, v), 0);
     // cf. Eq.29 of https://www.cs.umd.edu/~zwicker/publications/EWASplatting-TVCG02.pdf
     vec2 u1 = unpackHalf2x16(cov.x); // a, b
     vec2 u2 = unpackHalf2x16(cov.y); // c, d
