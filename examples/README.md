@@ -12,9 +12,9 @@ https://gauzilla.vercel.app?url=cat.splat
 https://gauzilla.vercel.app?url=anime_figures02.splat
 
 
-## Istanbul
-![Istanbul](../images/taksim_square.png?raw=true "Istanbul")
-https://gauzilla.vercel.app?url=taksim_square.splat
+## Submarine
+![Submarine](../images/submarine.png?raw=true "Submarine")
+https://gauzilla.vercel.app?url=submarine.splat
 
 
 ## Stairs
